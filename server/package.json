@@ -1,0 +1,37 @@
+{
+  "name": "llm-chatter-server",
+  "private": true,
+  "version": "0.2.2",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "devDependencies": {
+    "vite": "^6.2.0"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.40.0",
+    "@google/generative-ai": "^0.24.0",
+    "@modelcontextprotocol/sdk": "^1.9.0",
+    "@openai/realtime-api-beta": "github:openai/openai-realtime-api-beta",
+    "axios": "^1.8.1",
+    "bcryptjs": "^3.0.2",
+    "body-parser": "^2.1.0",
+    "chalk": "^5.4.1",
+    "cors": "^2.8.5",
+    "dayjs": "^1.11.13",
+    "dotenv": "^16.4.7",
+    "express": "^5.0.1",
+    "express-rate-limit": "^7.5.0",
+    "express-validator": "^7.2.1",
+    "fs": "^0.0.2",
+    "helmet": "^8.1.0",
+    "jsonwebtoken": "^9.0.2",
+    "mime-types": "^3.0.1",
+    "openai": "^4.96.0",
+    "path": "^0.12.7",
+    "ws": "^8.18.1"
+  }
+}

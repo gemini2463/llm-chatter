@@ -1,0 +1,79 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Roboto",
+      "Oxygen", "Ubuntu", "Cantarell", "Fira Sans", "Droid Sans",
+      "Helvetica Neue", sans-serif;
+    background-color: rgb(40, 42, 54);
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    margin: 0;
+  }
+  body {
+    margin: 0;
+  }
+}
+
+@keyframes infinite-spinning {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes pulse {
+  0%,
+  100% {
+    transform: scale(1); /* Original size */
+  }
+  50% {
+    transform: scale(1.5); /* Grow to 1.5 times the size */
+  }
+}
+
+/* For the spinning icons by default */
+.fa-hat-wizard,
+.fa-square-pen:hover,
+.fa-square-odnoklassniki:hover,
+.fa-keyboard:hover,
+.fa-cubes:hover,
+.fa-gear:hover,
+.fa-microphone-lines:hover,
+.fa-splotch:hover,
+.fa-temperature-three-quarters:hover,
+.fa-react:hover,
+.fa-comments:hover,
+.fa-circle-plus:hover,
+.fa-triangle-exclamation,
+.fa-square-poll-horizontal:hover,
+.fa-book-bookmark:hover,
+.fa-clone:hover,
+.fa-share:hover,
+.fa-retweet:hover {
+  -webkit-animation: infinite-spinning 1s ease-out 0s infinite normal;
+  animation: infinite-spinning 1s ease-out 0s infinite normal;
+}
+
+/* For the pulsing icon separately on hover */
+.fa-circle-xmark:hover,
+.fa-github:hover,
+.fa-rotate:hover,
+.fa-copy:hover {
+  -webkit-animation: pulse 0.6s ease-in-out infinite; /* For Safari */
+  animation: pulse 0.6s ease-in-out infinite; /* Standard syntax */
+}
+
+.element-hidden {
+  display: none;
+}
+
+@media (max-width: 1000px) {
+  .smolscreen\:w-full {
+    width: 100%;
+  }
+}
