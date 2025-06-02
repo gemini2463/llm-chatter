@@ -13,8 +13,8 @@
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.40.0",
-    "@google/generative-ai": "^0.24.0",
-    "@modelcontextprotocol/sdk": "^1.9.0",
+    "@google/genai": "^0.13.0",
+    "@modelcontextprotocol/sdk": "^1.8.0",
     "@openai/realtime-api-beta": "github:openai/openai-realtime-api-beta",
     "axios": "^1.8.1",
     "bcryptjs": "^3.0.2",
