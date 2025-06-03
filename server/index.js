@@ -84,14 +84,12 @@ function readChatHistory(username) {
   try {
     // Check if the file exists
     if (!fs.existsSync(chatSpecificPath)) {
-      fs.writeFileSync(chatSpecificPath, {}, "utf8");
+      // Write an empty JSON object as a string
+      fs.writeFileSync(chatSpecificPath, JSON.stringify({}), "utf8");
       return {};
     }
 
     const fileContent = fs.readFileSync(chatSpecificPath, "utf8");
-    //const decrypted = decrypt(fileContent, passphrase);
-
-    //return JSON.parse(decrypted);
     return fileContent ? JSON.parse(fileContent) : {};
   } catch (error) {
     console.error(`Error reading chat history for ${username}:`, error);

@@ -324,6 +324,7 @@ const Chat = ({
           },
           keep_alive: 0,
           images: base64Image ? [base64Image.split(",")[1]] : [],
+          stream: false,
         };
         break;
     }
