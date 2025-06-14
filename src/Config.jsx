@@ -18,6 +18,8 @@ const openAIModels = [
 ];
 
 const anthropicModels = [
+  "claude-opus-4-20250514",
+  "claude-sonnet-4-20250514",
   "claude-3-7-sonnet-20250219",
   "claude-3-5-sonnet-20241022",
   "claude-3-5-haiku-20241022",
@@ -27,8 +29,8 @@ const anthropicModels = [
 ];
 
 const googleModels = [
-  "gemini-2.5-pro-preview-05-06",
-  "gemini-2.5-pro-exp-03-25",
+  "gemini-2.5-pro-preview-06-05",
+  "gemini-2.5-flash-preview-05-20",
   "gemini-2.0-flash",
   "gemini-2.0-flash-preview-image-generation",
   "gemini-1.5-pro",
@@ -37,12 +39,12 @@ const googleModels = [
 ];
 
 const grokModels = [
-  "grok-3-beta",
-  "grok-3-mini-beta",
+  "grok-3",
+  "grok-3-fast",
+  "grok-3-mini",
+  "grok-3-mini-fast",
   "grok-2",
   "grok-2-vision",
-  "grok-vision-beta",
-  "grok-beta",
 ];
 
 const metaModels = [
@@ -73,7 +75,7 @@ const Config = {
     "Let's work this out in a step by step way to be sure we have the right answer.",
 
   defaultChatType: "OpenAI",
-  defaultModel: { name: "o4-mini" },
+  defaultModel: { name: "gpt-4.1-mini" },
   defaultModelList: openAIModels,
 
   models: {
@@ -98,21 +100,22 @@ const Config = {
     "gpt-4o-mini",
     "gpt-4-turbo",
     "gpt-image-1",
+    "claude-opus-4-20250514",
+    "claude-sonnet-4-20250514",
     "claude-3-7-sonnet-20250219",
     "claude-3-5-sonnet-20241022",
     "claude-3-5-haiku-20241022",
     "claude-3-opus-20240229",
     "claude-3-sonnet-20240229",
     "claude-3-haiku-20240307",
-    "gemini-2.5-pro-preview-05-06",
-    "gemini-2.5-pro-exp-03-25",
+    "gemini-2.5-pro-preview-06-05",
+    "gemini-2.5-flash-preview-05-20",
     "gemini-2.0-flash",
     "gemini-2.0-flash-preview-image-generation",
     "gemini-1.5-pro",
     "gemini-1.5-flash",
     "gemini-1.5-flash-8b",
     "grok-2-vision",
-    "grok-vision-beta",
     "Llama-4-Scout-17B-16E-Instruct-FP8",
     "Llama-4-Maverick-17B-128E-Instruct-FP8",
     "granite3.2-vision:latest",
