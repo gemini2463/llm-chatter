@@ -79,14 +79,8 @@ const alibabaModels = [
 const mcpModels = ["Qwen/Qwen2.5-72B-Instruct"];
 
 const Config = {
-  //serverURL: "http://localhost:8080",
-  //relayURL: "http://localhost:8081",
-  //serverURL: "https://x.rossu.dev",
-  //relayURL: "https://x.rossu.dev/relay",
-  serverURL: "https://ai.rossu.dev",
-  relayURL: "https://ai.rossu.dev/relay",
-  //serverURL: "https://ai.activehost.pro",
-  //relayURL: "https://ai.activehost.pro/relay",
+  serverURL: "http://localhost:8080",
+  relayURL: "http://localhost:8081",
 
   ollamaEnabled: true,
 

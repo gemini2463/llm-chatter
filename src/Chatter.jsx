@@ -224,7 +224,7 @@ function Chatter() {
     setCheckedIn(false);
     setSignInAttempted(attempted);
     localStorage.setItem("localModels", JSON.stringify([]));
-    await StorageService.clearChatHistory(serverUsername);
+    await StorageService.deleteChatHistory(serverUsername);
     setLocalModels([]);
   });
 
@@ -331,7 +331,7 @@ function Chatter() {
       Cookies.remove("chosenOllama");
       Cookies.remove("serverUsername");
       localStorage.setItem("localModels", JSON.stringify([]));
-      await StorageService.clearChatHistory(serverUsername);
+      await StorageService.deleteChatHistory(serverUsername);
       setLocalModels([]);
 
       return;
