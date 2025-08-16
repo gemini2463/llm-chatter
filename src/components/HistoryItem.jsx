@@ -1,6 +1,7 @@
 import { useState, useCallback } from "react";
 import Config from "../Config";
 import copy from "copy-to-clipboard";
+import axios from "axios";
 
 export const HistoryItem = ({
   chats,
@@ -14,6 +15,7 @@ export const HistoryItem = ({
   setChatCount,
   context,
   thread,
+  clientJWT,
   serverUsername,
 }) => {
   const [expanded, setExpanded] = useState(false);
@@ -24,7 +26,17 @@ export const HistoryItem = ({
   const findSystem = chats.find((chat) => chat.r === "system") || "";
   const lastChat = chats[chats.length - 1];
 
-  const lastChatMsg = lastChat.z;
+  let lastChatMsg = lastChat.z;
+  let lastChatImages = [];
+  if (
+    lastChat.images &&
+    Array.isArray(lastChat.images) &&
+    lastChat.images.length > 0
+  ) {
+    lastChatImages = lastChat.images;
+    lastChatMsg = `Image Output (${lastChatImages.length} file${lastChatImages.length > 1 ? "s" : ""}).`;
+  }
+
   const shortLast =
     lastChatMsg.length > 250
       ? `${lastChatMsg.substring(0, 250)}...`
@@ -51,7 +63,7 @@ export const HistoryItem = ({
     }
   });
 
-  const makeNewChat = useCallback((isShare) => {
+  const makeNewChat = useCallback(async (isShare) => {
     let chatType = "";
 
     if (Config.models.openAI.includes(firstChat.m)) {
@@ -90,9 +102,18 @@ export const HistoryItem = ({
     };
 
     if (isShare) {
-      const setURL =
-        serverURL + "/shared/" + serverUsername + "/" + firstChat.u;
-      setTheShareURL(setURL);
+      try {
+        const resp = await axios.post(
+          serverURL + "/mkshr",
+          { chatId: firstChat.u, user: serverUsername },
+          { headers: { Authorization: `Bearer ${clientJWT}` } }
+        );
+        const shareToken = resp.data.shareToken;
+        const setURL = `${serverURL}/shared/${shareToken}`;
+        setTheShareURL(setURL);
+      } catch (err) {
+        console.error("Share failed:", err);
+      }
     } else {
       setComponentList([...componentList, newChat]);
       setChatCount(chatCount + 1);
@@ -238,6 +259,22 @@ export const HistoryItem = ({
         <span className="underline">Latest Response:</span>
         <br />
         <span className="italic">{shortLast}</span>
+        {lastChatImages.length > 0 && (
+          <div className="flex flex-wrap gap-4 mt-2">
+            {lastChatImages.map((imgB64, idx) => (
+              <img
+                key={idx}
+                src={"data:image/jpeg;base64," + imgB64}
+                alt={`History Image ${idx + 1}`}
+                style={{
+                  width: "150px",
+                  cursor: "pointer",
+                  marginTop: "5px",
+                }}
+              />
+            ))}
+          </div>
+        )}
         <br />
         {toggleIcon()}
       </div>

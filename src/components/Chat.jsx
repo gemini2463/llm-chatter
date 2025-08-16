@@ -4,7 +4,7 @@ import { animated, Spring } from "react-spring";
 import TextareaAutosize from "react-textarea-autosize";
 import axios from "axios";
 import copy from "copy-to-clipboard";
-import { debounce } from "lodash";
+import { debounce, set } from "lodash";
 import XClose from "./XClose";
 import CopyButton from "./CopyButton";
 import ContentText from "./ContentText";
@@ -12,6 +12,12 @@ import FileUploader from "./FileUploader";
 import { dataContext } from "../Chatter";
 import Config from "../Config";
 import Cookies from "js-cookie";
+
+function toTextArray(input) {
+  if (Array.isArray(input)) return input;
+  if (typeof input === "string") return [{ type: "text", text: input }];
+  return [{ type: "text", text: String(input) }];
+}
 
 const Chat = ({
   closeID,
@@ -45,6 +51,7 @@ const Chat = ({
     chosenDeepseekAI,
     chosenOllama,
     chosenOpenAI,
+    chosenAlibabaAI,
     clientJWT,
     checkedIn,
     setClientJWT,
@@ -104,13 +111,10 @@ const Chat = ({
     for (const key of sortedKeys) {
       const item = inputData[key];
 
-      // Determine the content format based on role
       let content;
       if (item.r === "assistant") {
-        // Assistant content is just a string
         content = item.z;
       } else {
-        // System and user content are arrays with type and text
         content = [{ type: "text", text: item.z }];
       }
 
@@ -126,15 +130,8 @@ const Chat = ({
   const makeMetas = useCallback((inputData) => {
     const result = [];
 
-    const noSystemMeta =
-      Config.reasoningModels.includes(model) ||
-      Config.imgOutputModels.includes(model);
-
-    if (noSystemMeta) {
-      return result;
-    }
-
-    // Sort by item number to ensure correct order
+    // Always generate metadata for restored chats so dates are shown,
+    // even for reasoning models or image-output models.
     const sortedKeys = Object.keys(inputData).sort((a, b) => {
       const numA = parseInt(a.split("_")[1]);
       const numB = parseInt(b.split("_")[1]);
@@ -143,8 +140,18 @@ const Chat = ({
 
     for (const key of sortedKeys) {
       const item = inputData[key];
-      const whichPrompt = item.r === "system" ? "Starting Prompt" : "Prompt";
-      result.push([item.r === "assistant" ? item.m : whichPrompt, item.d]);
+      let label;
+
+      if (item.r === "system") {
+        label = "Starting Prompt";
+      } else if (item.r === "assistant") {
+        // Prefer model from item, fallback to current model prop
+        label = item.m || model;
+      } else {
+        label = "Prompt";
+      }
+
+      result.push([label, item.d]);
     }
 
     return result;
@@ -158,7 +165,6 @@ const Chat = ({
   const [base64Image, setBase64Image] = useState("");
   const [textAttachment, setTextAttachment] = useState("");
   const [fileFormat, setFileFormat] = useState("");
-  const [imageOutput, setImageOutput] = useState("");
   const [imgQuality, setImgQuality] = useState("medium");
   const [imgSize, setImgSize] = useState("1024x1024");
   const [messageMetas, setMessageMetas] = useState(
@@ -173,295 +179,278 @@ const Chat = ({
   const [isError, setIsError] = useState(false);
   const [sentOne, setSentOne] = useState(false);
   const [isExpanded, setIsExpanded] = useState(true);
-
+  const [enableImgOutput, setEnableImgOutput] = useState(false);
   const [tempOutput, setTempOutput] = useState("");
   const [pending, setPending] = useState(false);
-  const [going, setGoing] = useState(true);
 
-  const fetchData = useCallback(async (input, modelThisFetch) => {
-    let endPath = "";
-    let sendPacket = {};
-    const isImgOutput = Config.imgOutputModels.includes(modelThisFetch);
+  const fetchData = useCallback(
+    async (input, modelThisFetch) => {
+      let endPath = "";
+      let sendPacket = {};
 
-    const inputWithAttachment = textAttachment
-      ? input + "\n\n" + textAttachment
-      : input;
-    let msgs = chatMessages.concat({
-      role: "user",
-      content: [{ type: "text", text: inputWithAttachment }],
-    });
+      const isImgOutput =
+        Config.imgOutputModels.includes(modelThisFetch) ||
+        (Config.imgGenerationModels.includes(modelThisFetch) &&
+          enableImgOutput);
 
-    const visionMsg =
-      chatType === "Anthropic"
-        ? {
-            role: "user",
-            content: [
-              {
-                type: "image",
-                source: {
-                  type: "base64",
-                  media_type: fileFormat,
-                  data: base64Image.split(",")[1],
-                },
-              },
-              {
-                type: "text",
-                text: "Image.",
-              },
-            ],
-          }
-        : chatType === "OpenAI"
-        ? {
-            role: "user",
-            content: [
-              {
-                type: "text",
-                text: "Image.",
-              },
-              {
-                type: "image_url",
-                image_url: { url: base64Image },
-              },
-            ],
-          }
-        : null; //Closes Anthropic/OpenAI image handling.
+      const inputWithAttachment = textAttachment
+        ? input + "\n\n" + textAttachment
+        : input;
 
-    let imagesToSend = [];
-    if (base64Image && fileFormat) {
-      // Create an object with mimeType and data directly, as the server loop expects
-      imagesToSend.push({
-        mimeType: fileFormat, // e.g., "image/jpeg", "image/png"
-        data: base64Image.split(",")[1], // Ensure you only send the Base64 part
+      let msgs = chatMessages.concat({
+        role: "user",
+        content: [{ type: "text", text: inputWithAttachment }],
       });
-    }
 
-    if (
-      !sentOne &&
-      base64Image &&
-      Config.visionModels.includes(modelThisFetch) &&
-      chatType !== "Google"
-    ) {
-      msgs = msgs.concat(visionMsg);
-    }
+      let imagesToSend = [];
+      if (base64Image && fileFormat) {
+        imagesToSend.push({
+          mimeType: fileFormat,
+          data: base64Image.split(",")[1],
+        });
+      }
 
-    switch (chatType) {
-      case "OpenAI":
-        endPath = serverURL + "/openai";
-        sendPacket = {
-          messages: msgs,
-          temperature: parseFloat(temperature),
-          top_p: parseFloat(topp),
-          //stream: !isImgOutput,
-        };
-        break;
+      const isReasoningModel = Config.reasoningModels.includes(modelThisFetch);
 
-      case "Grok":
-        endPath = serverURL + "/grok";
-        sendPacket = {
-          messages: msgs,
-          temperature: parseFloat(temperature),
-          top_p: parseFloat(topp),
-          top_k: parseFloat(topk),
-          //stream: !isImgOutput,
-        };
-        break;
+      const visionMsg =
+        chatType === "Anthropic"
+          ? {
+              role: "user",
+              content: [
+                {
+                  type: "image",
+                  source: {
+                    type: "base64",
+                    media_type: fileFormat,
+                    data: base64Image.split(",")[1],
+                  },
+                },
+                {
+                  type: "text",
+                  text: isReasoningModel ? inputWithAttachment : "Image.",
+                },
+              ],
+            }
+          : chatType === "OpenAI"
+            ? {
+                role: "user",
+                content: [
+                  {
+                    type: "text",
+                    text: isReasoningModel ? inputWithAttachment : "Image.",
+                  },
+                  {
+                    type: "image_url",
+                    image_url: { url: base64Image },
+                  },
+                ],
+              }
+            : null;
 
-      case "Meta":
-        endPath = serverURL + "/meta";
-        sendPacket = {
-          messages: msgs,
-          temperature: parseFloat(temperature),
-          top_p: parseFloat(topp),
-          top_k: parseFloat(topk),
-          //stream: !isImgOutput,
-        };
-        break;
+      if (
+        !sentOne &&
+        base64Image &&
+        Config.visionModels.includes(modelThisFetch) &&
+        chatType !== "Google"
+      ) {
+        msgs = msgs.concat(visionMsg);
+      }
 
-      case "Deepseek":
-        endPath = serverURL + "/deepseek";
-        sendPacket = {
-          messages: msgs,
-          temperature: parseFloat(temperature),
-          top_p: parseFloat(topp),
-          top_k: parseFloat(topk),
-          //stream: !isImgOutput,
-        };
-        break;
-
-      case "Anthropic":
-        endPath = serverURL + "/anthropic";
-        sendPacket = {
-          messages: msgs,
-          temperature: parseFloat(temperature),
-          top_p: parseFloat(topp),
-          top_k: parseFloat(topk),
-          system: systemMessage,
-        };
-        break;
-
-      case "Google":
-        endPath = serverURL + "/google";
-        sendPacket = {
-          messages: msgs,
-          temperature: parseFloat(temperature),
-          top_p: parseFloat(topp),
-          top_k: parseFloat(topk),
-          system: systemMessage,
-          prompt: input,
-        };
-        break;
-
-      default: //Ollama
-        endPath = serverURL + "/ollama";
-        sendPacket = {
-          prompt: input,
-          system: systemMessage,
-          context: chatContext,
-          options: {
+      switch (chatType) {
+        case "OpenAI":
+          endPath = serverURL + "/openai";
+          sendPacket = {
+            messages: msgs,
+            temperature: parseFloat(temperature),
+            top_p: parseFloat(topp),
+          };
+          break;
+        case "Grok":
+          endPath = serverURL + "/grok";
+          sendPacket = {
+            messages: msgs,
             temperature: parseFloat(temperature),
             top_p: parseFloat(topp),
             top_k: parseFloat(topk),
-          },
-          keep_alive: 0,
-          images: base64Image ? [base64Image.split(",")[1]] : [],
-          stream: false,
-        };
-        break;
-    }
+            search_parameters: { mode: "auto" },
+          };
+          break;
+        case "Meta":
+          endPath = serverURL + "/meta";
+          sendPacket = {
+            messages: msgs,
+            temperature: parseFloat(temperature),
+            top_p: parseFloat(topp),
+            top_k: parseFloat(topk),
+          };
+          break;
+        case "Deepseek":
+          endPath = serverURL + "/deepseek";
+          sendPacket = {
+            messages: msgs,
+            temperature: parseFloat(temperature),
+            top_p: parseFloat(topp),
+            top_k: parseFloat(topk),
+          };
+          break;
+        case "Anthropic":
+          endPath = serverURL + "/anthropic";
+          sendPacket = {
+            messages: msgs,
+            temperature: parseFloat(temperature),
+            top_p: parseFloat(topp),
+            top_k: parseFloat(topk),
+            system: systemMessage,
+          };
+          break;
+        case "Google":
+          endPath = serverURL + "/google";
+          sendPacket = {
+            messages: msgs,
+            temperature: parseFloat(temperature),
+            top_p: parseFloat(topp),
+            top_k: parseFloat(topk),
+            system: systemMessage,
+            prompt: inputWithAttachment,
+          };
+          break;
+        case "Alibaba":
+          endPath = serverURL + "/alibaba";
+          sendPacket = {
+            messages: msgs,
+            temperature: parseFloat(temperature),
+            top_p: parseFloat(topp),
+            top_k: parseFloat(topk),
+            system: systemMessage,
+            prompt: inputWithAttachment,
+          };
+          break;
+        default:
+          endPath = serverURL + "/ollama";
+          sendPacket = {
+            prompt: inputWithAttachment,
+            system: systemMessage,
+            context: chatContext,
+            options: {
+              temperature: parseFloat(temperature),
+              top_p: parseFloat(topp),
+              top_k: parseFloat(topk),
+            },
+            keep_alive: 0,
+            images: base64Image ? [base64Image.split(",")[1]] : [],
+            stream: false,
+          };
+          break;
+      }
 
-    if (imagesToSend !== null) {
-      sendPacket.images = imagesToSend;
-    }
+      if (imagesToSend.length > 0) {
+        sendPacket.images = imagesToSend;
+      }
 
-    sendPacket.uniqueChatID = uniqueChatID;
-    sendPacket.model = modelThisFetch;
-    sendPacket.sentOne = sentOne;
-    sendPacket.serverUsername = serverUsername;
-    sendPacket.thread = thread;
-    sendPacket.imgOutput = isImgOutput;
-    sendPacket.imgQuality = imgQuality;
-    sendPacket.imgSize = imgSize;
-    sendPacket.imgInput = base64Image ? true : false;
+      sendPacket.uniqueChatID = uniqueChatID;
+      sendPacket.model = modelThisFetch;
+      sendPacket.sentOne = sentOne;
+      sendPacket.serverUsername = serverUsername;
+      sendPacket.thread = thread;
+      sendPacket.imgOutput = isImgOutput;
+      sendPacket.imgQuality = imgQuality;
+      sendPacket.imgSize = imgSize;
+      sendPacket.imgInput = !!base64Image;
+      sendPacket.prompt = inputWithAttachment;
 
-    const isStreaming =
-      (chatType === "OpenAI" ||
-        chatType === "Grok" ||
-        chatType === "Deepseek" ||
-        chatType === "Meta") &&
-      !isImgOutput;
-    try {
-      const startTime = Date.now();
-      /*      let response;
-      let output = "";
-       if (isStreaming) {
-        setGoing(true);
-        response = await fetch(endPath, {
-          method: "POST",
+      try {
+        const startTime = Date.now();
+        const response = await axios.post(endPath, sendPacket, {
           headers: {
             "Content-Type": "application/json",
             Authorization: `Bearer ${clientJWT}`,
           },
-          body: JSON.stringify(sendPacket),
         });
-        // Stream reading
-        const reader = response.body.getReader();
-        const decoder = new TextDecoder();
-        let buffer = "";
-        setPending(true);
-        while (going) {
-          const { value, done } = await reader.read();
-          if (done) break;
-          buffer += decoder.decode(value, { stream: true });
-          const events = buffer.split("\n\n");
-          buffer = events.pop();
-          for (const event of events) {
-            const match = event.match(/^data:\s*(.*)$/m);
-            if (match) {
-              let text = match[1];
-              if (text === "[DONE]") {
-                setPending(false);
-                setGoing(false);
-                break;
+
+        const durTime = ((Date.now() - startTime) / 1000).toFixed(2);
+        const normalizeText = (text) => text.trim().replace(/\n+/g, "\n");
+
+        let theEnd;
+
+        switch (chatType) {
+          case "OpenAI":
+          case "Grok":
+          case "Deepseek":
+          case "Meta":
+          case "Alibaba":
+            if (isImgOutput) {
+              const b64Data = response.data.base64;
+              if (
+                b64Data &&
+                (Array.isArray(b64Data) ? b64Data.length > 0 : true)
+              ) {
+                theEnd = toTextArray("Image Output.");
+                const imgs = Array.isArray(b64Data) ? b64Data : [b64Data];
+                return [theEnd, durTime, imgs];
+              } else {
+                theEnd = toTextArray(
+                  response.data?.output_text || "No response."
+                );
               }
-              try {
-                text = JSON.parse(text);
-              } catch (error) {
-                console.log(error);
-                continue;
-              }
-              // Safely extract the content string from the chunk
-              const content = text.choices?.[0]?.delta?.content;
-              if (typeof content === "string") {
-                output += content;
-                setTempOutput(output);
-              }
+            } else {
+              theEnd = toTextArray(response.data.choices[0].message.content);
             }
-          }
+            break;
+          case "Anthropic":
+            theEnd = toTextArray(normalizeText(response.data.content[0].text));
+            break;
+          case "Google":
+            theEnd = toTextArray(normalizeText(response.data));
+            break;
+          default:
+            theEnd = toTextArray(response.data.response);
+            setChatContext(response.data.context);
+            break;
         }
-        setPending(false);
-      } else { */
-      const response = await axios.post(endPath, sendPacket, {
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${clientJWT}`,
-        },
-      });
-      //}
 
-      const endTime = Date.now();
-      const durTime = ((endTime - startTime) / 1000).toFixed(2);
-      const normalizeText = (text) => text.trim().replace(/\n+/g, "\n");
-      let theEnd;
-      switch (chatType) {
-        case "OpenAI":
-        case "Grok":
-        case "Deepseek":
-        case "Meta":
-          theEnd = isImgOutput
-            ? [{ type: "text", text: "Image Output." }]
-            : [
-                {
-                  type: "text",
-                  text: response.data.choices[0].message.content,
-                },
-              ];
-          if (isImgOutput) setImageOutput(response.data.base64);
-          break;
-        case "Anthropic":
-          theEnd = normalizeText(response.data.content[0].text);
-          break;
-        case "Google":
-          theEnd = [{ type: "text", text: normalizeText(response.data) }];
-          break;
-        default:
-          // Handles Ollama
-          theEnd = response.data.response;
-          setChatContext(response.data.context);
-          break;
+        return [theEnd, durTime];
+      } catch (error) {
+        setIsError(true);
+        console.error(error);
+        let errorMessage = "An error occurred.";
+        if (error.response?.status === 503) {
+          errorMessage = "Model Overloaded. Try again later.";
+        }
+        if (error.response?.status === 401) {
+          errorMessage = "Session Expired. Please log in again.";
+          setCheckedIn(false);
+          Cookies.set("checkedIn", JSON.stringify(false), { expires: 1 });
+          setClientJWT("");
+          Cookies.set("clientJWT", JSON.stringify(""), { expires: 1 });
+        }
+        return [toTextArray(errorMessage), 0];
       }
-      return [theEnd, durTime];
-    } catch (error) {
-      setIsError(true);
-      console.error(error);
-      let errorMessage = "An error occurred.";
-
-      if (error.response.status === 503) {
-        errorMessage = "Model Overloaded. Try again later.";
-      }
-
-      if (error.response.status === 401) {
-        errorMessage = "Session Expired. Please log in again.";
-
-        setCheckedIn(false);
-        Cookies.set("checkedIn", JSON.stringify(false), { expires: 1 });
-
-        setClientJWT("");
-        Cookies.set("clientJWT", JSON.stringify(""), { expires: 1 });
-      }
-
-      return [[{ type: "text", text: errorMessage }], 0];
-    }
-  });
+    },
+    [
+      textAttachment,
+      chatMessages,
+      base64Image,
+      fileFormat,
+      sentOne,
+      chatContext,
+      temperature,
+      topp,
+      topk,
+      systemMessage,
+      thread,
+      imgQuality,
+      imgSize,
+      serverUsername,
+      clientJWT,
+      uniqueChatID,
+      chatType,
+      serverURL,
+      setChatContext,
+      setCheckedIn,
+      setClientJWT,
+      enableImgOutput,
+    ]
+  );
 
   const handleInput = useCallback(
     debounce(
@@ -484,8 +473,13 @@ const Chat = ({
                 role: "user",
                 content: [{ type: "text", text: finalInput[0] }],
               },
-              { role: "assistant", content: chatOut[0] }
+              {
+                role: "assistant",
+                content: chatOut[0],
+                images: chatOut[2] || [],
+              }
             );
+
             setChatMessages(chatNewMsg);
 
             const newMeta = [
@@ -494,15 +488,35 @@ const Chat = ({
             ];
             setMessageMetas((prevMetas) => prevMetas.concat(newMeta));
 
-            setChatMessagesPlusMore((prevMessages) =>
-              prevMessages.concat(
+            setChatMessagesPlusMore((prevMessages) => {
+              const updated = prevMessages.concat(
                 {
                   role: "user",
                   content: [{ type: "text", text: finalInput[0] }],
                 },
-                { role: "assistant", content: chatOut[0] }
-              )
-            );
+                {
+                  role: "assistant",
+                  content: chatOut[0],
+                  images: chatOut[2] || [],
+                }
+              );
+
+              let currentImageIndex = 0;
+              const newImageMap = updated.map((msg) => {
+                const textContent = Array.isArray(msg.content)
+                  ? msg.content[0]?.text
+                  : msg.content;
+                if (
+                  msg.role === "assistant" &&
+                  textContent === "Image Output."
+                ) {
+                  return currentImageIndex++;
+                }
+                return null;
+              });
+
+              return updated;
+            });
 
             if (addedModels.length === 0) {
               setSentOne(true);
@@ -549,6 +563,10 @@ const Chat = ({
     setImgSize(size.target.value);
   });
 
+  const handleImgGenToggle = useCallback((e) => {
+    setEnableImgOutput(e.target.checked);
+  }, []);
+
   const handleQualityChange = useCallback((quality) => {
     setImgQuality(quality.target.value);
   });
@@ -564,10 +582,9 @@ const Chat = ({
     const index = addedModels.indexOf(model);
 
     if (index !== -1) {
-      // Check if the model exists in the array
       const newModelArray = [
-        ...addedModels.slice(0, index), // All models before the model to delete
-        ...addedModels.slice(index + 1), // All models after the model to delete
+        ...addedModels.slice(0, index),
+        ...addedModels.slice(index + 1),
       ];
       setAddedModels(newModelArray);
     }
@@ -612,7 +629,6 @@ const Chat = ({
 
     const selectedText = document.getSelection().toString();
 
-    //Remove soft hyphens
     const textContent = selectedText.replace(/\xAD/g, "");
 
     navigator.clipboard.writeText(textContent);
@@ -626,7 +642,6 @@ const Chat = ({
 
   const getContentText = useCallback((content) => {
     if (Array.isArray(content)) {
-      // If content is an array, access the text property of the first element
       return content[0]?.text || "";
     } else {
       // If content is a string, return it directly
@@ -669,6 +684,9 @@ const Chat = ({
       case "OpenAI":
         pickModel = chosenOpenAI;
         break;
+      case "Alibaba":
+        pickModel = chosenAlibabaAI;
+        break;
     }
 
     const newChat = {
@@ -701,26 +719,30 @@ const Chat = ({
       {(styles) => (
         <animated.div
           style={styles}
-          className="min-w-[100%] self-start mt-2 mb-2 inline p-0 bg-nosferatu-200 rounded-3xl bg-gradient-to-tl from-nosferatu-500 shadow-sm"
+          className="w-full self-start mt-2 mb-2 inline-block p-0 bg-nosferatu-200 rounded-3xl bg-gradient-to-tl from-nosferatu-500 shadow-sm"
         >
-          {/* Chat ID number, Type of Model, X-Close button */}
-          <table className="min-w-[100%] border-separate border-spacing-y-2 border-spacing-x-2">
+          {}
+          <table className="min-w-[100%] fixed-layout border-separate border-spacing-y-2 border-spacing-x-2">
             <tbody>
               <tr>
-                <td
-                  colSpan="3"
-                  className="pb-4 tracking-wide text-4xl text-center font-bold text-black"
-                >
-                  <span className="mr-6">#{numba}</span>
-                  <i className="fa-regular fa-comments mr-6 text-nosferatu-800" />
-                  {chatType}
-                </td>
-                <td>
-                  <XClose onClose={onClose} closeID={closeID} />
+                <td colSpan="4" className="pb-4">
+                  <div className="flex items-center justify-between w-full">
+                    {/* Left side: chat number, icon, and type */}
+                    <div className="flex items-center text-4xl font-bold text-black tracking-wide">
+                      <span className="mr-6">#{numba}</span>
+                      <i className="fa-regular fa-comments mr-6 text-nosferatu-800" />
+                      {chatType}
+                    </div>
+
+                    {/* Right side: close button */}
+                    <div className="flex-shrink-0">
+                      <XClose onClose={onClose} closeID={closeID} />
+                    </div>
+                  </div>
                 </td>
               </tr>
 
-              {/* Two model types store the System message differently */}
+              {}
               {(chatType.includes("Anthropic") ||
                 chatType.includes("Google")) &&
                 !hasMessages && (
@@ -751,7 +773,7 @@ const Chat = ({
                   </tr>
                 )}
 
-              {/* Prompts and All Models' Responses */}
+              {}
               {chatMessagesPlusMore.map((obj, index) => {
                 const contentText = getContentText(obj.content);
 
@@ -786,17 +808,24 @@ const Chat = ({
                           Error
                         </div>
                       )}
-                      {imageOutput && obj.role === "assistant" ? (
-                        <img
-                          onClick={ToggleImageSize}
-                          src={"data:image/jpeg;base64," + imageOutput}
-                          alt="Image Output"
-                          style={{
-                            width: isExpanded ? "100%" : "300px",
-                            cursor: "pointer",
-                            marginTop: "10px",
-                          }}
-                        />
+                      {obj.role === "assistant" &&
+                      obj.images &&
+                      obj.images.length > 0 ? (
+                        <div className="flex flex-wrap gap-4">
+                          {obj.images.map((img, idx) => (
+                            <img
+                              key={idx}
+                              onClick={ToggleImageSize}
+                              src={"data:image/jpeg;base64," + img}
+                              alt={`Image Output ${idx + 1}`}
+                              style={{
+                                width: isExpanded ? "100%" : "300px",
+                                cursor: "pointer",
+                                marginTop: "10px",
+                              }}
+                            />
+                          ))}
+                        </div>
                       ) : (
                         <ContentText role={obj.role} txt={contentText} />
                       )}
@@ -805,7 +834,7 @@ const Chat = ({
                 );
               })}
 
-              {/* Streaming reply */}
+              {}
               {pending ? (
                 <>
                   <tr>
@@ -850,8 +879,8 @@ const Chat = ({
                 <></>
               )}
 
-              {/* Regular text chat input box, and the Send button */}
-              {(!isError || !sentOne) && !imageOutput && (
+              {}
+              {(!isError || !sentOne) && (
                 <tr>
                   <td colSpan="3">
                     <TextareaAutosize
@@ -886,9 +915,6 @@ const Chat = ({
                   </td>
                 </tr>
               )}
-
-              {/*  Settings */}
-
               <tr>
                 <td colSpan={4}>
                   <FileUploader
@@ -901,10 +927,102 @@ const Chat = ({
                   />
                 </td>
               </tr>
+              {(Config.imgGenerationModels.includes(model) ||
+                Config.imgOutputModels.includes(model)) && (
+                <tr>
+                  {/* Image Generation column */}
+                  <td className="w-1/2 bg-blade-200 rounded-xl bg-gradient-to-tl from-blade-400">
+                    <div className="flex items-center justify-center h-full p-2">
+                      {Config.imgOutputModels.includes(model) ? (
+                        <span className="font-bold text-lg text-black">
+                          {model}
+                        </span>
+                      ) : (
+                        <label className="flex items-center space-x-2">
+                          <input
+                            type="checkbox"
+                            checked={enableImgOutput}
+                            onChange={handleImgGenToggle}
+                            className="w-6 h-6"
+                          />
+                          <span className="font-bold text-lg text-black">
+                            Image Generation
+                          </span>
+                        </label>
+                      )}
+                    </div>
+                  </td>
+                  {(enableImgOutput ||
+                    Config.imgOutputModels.includes(model)) && (
+                    <>
+                      {/* Size column */}
+                      <td className="w-1/6 bg-cullen-200 rounded-xl bg-gradient-to-tl from-cullen-500">
+                        <table className="min-w-full">
+                          <tbody>
+                            <tr>
+                              <td className="w-1/6 text-center align-middle">
+                                <i className="ml-2 fa-solid fa-square-poll-horizontal text-2xl text-vanHelsing-900"></i>
+                              </td>
+                              <td className="w-5/6 p-1">
+                                <b>Size:</b>
+                                <br />
+                                <select
+                                  name="imgSize"
+                                  id="imgSize"
+                                  value={imgSize}
+                                  onChange={handleSizeChange}
+                                  className="hover:bg-vonCount-300 bg-vonCount-200 cursor-pointer p-2 w-full font-sans rounded-xl text-black"
+                                >
+                                  <option value="1536x1024">Landscape</option>
+                                  <option value="1024x1536">Portrait</option>
+                                  <option value="1024x1024">Square</option>
+                                </select>
+                              </td>
+                            </tr>
+                          </tbody>
+                        </table>
+                      </td>
+
+                      {/* Quality column */}
+                      <td
+                        colSpan="2"
+                        className="w-1/6 bg-aro-200 rounded-xl bg-gradient-to-tl from-aro-500"
+                      >
+                        <table className="min-w-full">
+                          <tbody>
+                            <tr>
+                              <td className="w-1/6 text-center align-middle">
+                                <i className="ml-2 fa-solid fa-square-poll-horizontal text-2xl text-vanHelsing-900"></i>
+                              </td>
+                              <td className="w-5/6 p-1">
+                                <b>Quality:</b>
+                                <br />
+                                <select
+                                  name="imgQuality"
+                                  id="imgQuality"
+                                  value={imgQuality}
+                                  onChange={handleQualityChange}
+                                  className="hover:bg-vonCount-300 bg-vonCount-200 cursor-pointer p-2 w-full font-sans rounded-xl text-black"
+                                >
+                                  <option value="low">Low</option>
+                                  <option value="medium">Medium</option>
+                                  <option value="high">High</option>
+                                </select>
+                              </td>
+                            </tr>
+                          </tbody>
+                        </table>
+                      </td>
+                    </>
+                  )}
+                </tr>
+              )}
+
+              {}
               {!Config.imgOutputModels.includes(model) ? (
                 <>
                   <tr className="align-top">
-                    {/*  Model info */}
+                    {}
                     <td className="w-1/2 bg-blade-200 rounded-xl bg-gradient-to-tl from-blade-400 p-2">
                       <table className="min-w-[100%]">
                         <tbody>
@@ -945,7 +1063,7 @@ const Chat = ({
                       </table>
                     </td>
 
-                    {/* temperature info */}
+                    {}
                     <td className="w-1/6 bg-vanHelsing-200 rounded-xl bg-gradient-to-tl from-vanHelsing-500">
                       <table>
                         <tbody>
@@ -964,7 +1082,7 @@ const Chat = ({
                       </table>
                     </td>
 
-                    {/* top-p info */}
+                    {}
                     <td
                       colSpan={
                         chatType.includes("OpenAI") ||
@@ -993,7 +1111,7 @@ const Chat = ({
                       </table>
                     </td>
 
-                    {/* top-k info */}
+                    {}
                     {chatType.includes("OpenAI") ||
                     chatType.includes("Grok") ||
                     chatType.includes("Deepseek") ||
@@ -1020,7 +1138,7 @@ const Chat = ({
                     )}
                   </tr>
 
-                  {/* Add Models interface */}
+                  {}
                   <tr className="align-top over">
                     <td colSpan="2" className="w-1/2">
                       {(!isError || !sentOne) && (
@@ -1088,7 +1206,7 @@ const Chat = ({
                         </>
                       )}
                     </td>
-                    {/* Copy System & first user prompt to a new Chat */}
+                    {}
                     <td colSpan={2} className="w-1/2">
                       <div className="bg-dracula-300 rounded-xl p-4 text-sm">
                         <p className="font-bold mb-1 text-base">New Chat:</p>
@@ -1108,98 +1226,7 @@ const Chat = ({
                   </tr>
                 </>
               ) : (
-                /* Image Output Models */
-                <>
-                  <tr className="align-top">
-                    <td
-                      colSpan={2}
-                      className="w-1/2 bg-blade-200 rounded-xl bg-gradient-to-tl from-blade-400 p-2"
-                    >
-                      <table className="min-w-[100%]">
-                        <tbody>
-                          <tr>
-                            <td className="min-w-[100%]">
-                              <p className="mb-2">
-                                <i className="fa-solid fa-splotch text-2xl text-dracula-500 ml-1"></i>{" "}
-                                <b>Model:</b>
-                              </p>
-                            </td>
-                          </tr>
-                          <tr>
-                            <td>
-                              <i className="fa-solid ml-4 fa-caret-right text-sm text-dracula-500"></i>{" "}
-                              {model}
-                            </td>
-                          </tr>
-                        </tbody>
-                      </table>
-                    </td>
-                    {chatType.includes("OpenAI") && (
-                      <td
-                        colSpan={2}
-                        className="w-1/2 bg-cullen-200 rounded-xl bg-gradient-to-tl from-cullen-500"
-                      >
-                        <table className="min-w-[100%]">
-                          <tbody>
-                            <tr className="align-top">
-                              <td className="w-1/6 items-baseline justify-evenly text-center align-middle">
-                                <i className="ml-2 fa-solid fa-square-poll-horizontal text-2xl text-vanHelsing-900 text-3xl"></i>
-                              </td>
-                              <td className="w-5/6 p-1">
-                                <b>Size:</b>
-                                <br />
-                                <select
-                                  name="imgSize"
-                                  id="imgSize"
-                                  value={imgSize}
-                                  onChange={(e) => handleSizeChange(e)}
-                                  className="hover:bg-vonCount-300 bg-vonCount-200 cursor-pointer p-4 min-w-full font-sans rounded-xl text-black"
-                                >
-                                  <option value="1536x1024">Landscape</option>
-                                  <option value="1024x1536">Portrait</option>
-                                  <option value="1024x1024">Square</option>
-                                </select>
-                              </td>
-                            </tr>
-                          </tbody>
-                        </table>
-                      </td>
-                    )}
-                  </tr>
-                  {chatType.includes("OpenAI") && (
-                    <tr className="align-top">
-                      <td
-                        colSpan="2"
-                        className="w-1/2 bg-aro-200 rounded-xl bg-gradient-to-tl from-aro-500"
-                      >
-                        <table className="min-w-[100%]">
-                          <tbody>
-                            <tr className="align-top">
-                              <td className="w-1/6 items-baseline justify-evenly text-center align-middle">
-                                <i className="ml-2 fa-solid fa-square-poll-horizontal text-2xl text-vanHelsing-900 text-3xl"></i>
-                              </td>
-                              <td className="w-5/6 p-1">
-                                <b>Quality:</b>
-                                <br />
-                                <select
-                                  name="imgQuality"
-                                  id="imgQuality"
-                                  value={imgQuality}
-                                  onChange={(e) => handleQualityChange(e)}
-                                  className="hover:bg-vonCount-300 bg-vonCount-200 cursor-pointer p-4 min-w-full font-sans rounded-xl text-black"
-                                >
-                                  <option value="low">Low</option>
-                                  <option value="medium">Medium</option>
-                                  <option value="high">High</option>
-                                </select>
-                              </td>
-                            </tr>
-                          </tbody>
-                        </table>
-                      </td>
-                    </tr>
-                  )}
-                </>
+                <></>
               )}
             </tbody>
           </table>

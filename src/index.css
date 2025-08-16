@@ -4,9 +4,10 @@
 
 @layer base {
   html {
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Roboto",
-      "Oxygen", "Ubuntu", "Cantarell", "Fira Sans", "Droid Sans",
-      "Helvetica Neue", sans-serif;
+    font-family:
+      -apple-system, BlinkMacSystemFont, "Segoe UI", "Roboto", "Oxygen",
+      "Ubuntu", "Cantarell", "Fira Sans", "Droid Sans", "Helvetica Neue",
+      sans-serif;
     background-color: rgb(40, 42, 54);
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
@@ -76,4 +77,13 @@
   .smolscreen\:w-full {
     width: 100%;
   }
+}
+
+.shared-image {
+  transition: width 0.2s ease-in-out;
+}
+
+table.fixed-layout {
+  table-layout: fixed;
+  width: 100%;
 }

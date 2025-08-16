@@ -1,15 +1,4 @@
-/* Shorthand (file storage) for the following:
-i = item_x
-u = chatId
-m = model
-t = temp
-p = topp
-k = topk
-r = role
-d = time
-z = message */
-
-import { useCallback, useState } from "react";
+import { useCallback, useState, useMemo } from "react";
 import { HistoryItem } from "./HistoryItem";
 
 const ChatHistory = ({
@@ -23,93 +12,94 @@ const ChatHistory = ({
   componentList,
   syncClient,
   serverUsername,
+  clientJWT,
 }) => {
   const [expanded, setExpanded] = useState(false);
   const [showAtAll, setShowAtAll] = useState(false);
+  const [page, setPage] = useState(1);
+  const [itemsPerPage] = useState(10);
 
-  const handleToggleHistory = useCallback(() => {
-    setExpanded(!expanded);
-  });
-
-  const handleShowAtAll = useCallback(() => {
-    setShowAtAll(!showAtAll);
-  });
-
-  // Function 1: Get all unique chat IDs
-  const getUniqueChatIds = useCallback((database) => {
-    const uniqueChatIds = new Set();
-
-    // Use Object.values to get all items directly
-    Object.entries(database).forEach(([key, item]) => {
-      if (key.startsWith("i_")) {
-        uniqueChatIds.add(item.u);
-      }
-    });
-
-    return Array.from(uniqueChatIds).sort((a, b) => {
-      const firstChatA = Object.values(database).find((item) => item.u === a);
-      const firstChatB = Object.values(database).find((item) => item.u === b);
-
-      const dateA = parseDate(firstChatA.d);
-      const dateB = parseDate(firstChatB.d);
-
-      return dateB - dateA; // Change to descending order
-    });
-  });
-
-  const getChatsByChatId = useCallback((database, chatId) => {
-    return Object.entries(database)
-      .filter(
-        ([key, item]) =>
-          key.startsWith("i_") &&
-          item &&
-          typeof item === "object" &&
-          item.u === chatId,
-      )
-      .map(([_, item]) => item)
-      .sort((a, b) => {
-        const dateA = parseDate(a.d);
-        const dateB = parseDate(b.d);
-        if (isNaN(dateA) && isNaN(dateB)) return 0;
-        if (isNaN(dateA)) return 1;
-        if (isNaN(dateB)) return -1;
-        return dateA - dateB;
-      });
-  });
-
-  const getContextByChatId = useCallback((database, chatId) => {
-    const contextItems = Object.entries(database)
-      .filter(([key, item]) => key.startsWith("c_") && item.u === chatId)
-      .map(([key, item]) => item);
-
-    return contextItems.length > 0 ? contextItems[0] : [];
-  });
-
-  const getThreadByChatId = useCallback((database, chatId) => {
-    const contextItems = Object.entries(database)
-      .filter(([key, item]) => key.startsWith("t_") && item.u === chatId)
-      .map(([key, item]) => item);
-
-    return contextItems.length > 0 ? contextItems[0] : [];
-  });
-
-  // Helper function to parse date strings
+  // --- Helpers ---
   const parseDate = useCallback((dateString) => {
-    // Split the date string into components
+    if (!dateString) return new Date(0);
     const [datePart, timePart] = dateString.split(" ");
+    if (!datePart || !timePart) return new Date(0);
     const [day, month, year] = datePart.split("/");
     const [hours, minutes, seconds] = timePart.split(":");
-
-    // Create a Date object (note: month is 0-indexed in JavaScript Date)
     return new Date(year, month - 1, day, hours, minutes, seconds);
-  });
+  }, []);
 
-  const uniqueChatIds = getUniqueChatIds(chatHistory);
+  const getUniqueChatIds = useCallback(
+    (database) => {
+      const uniqueChatIds = new Set();
+      Object.entries(database || {}).forEach(([key, item]) => {
+        if (key.startsWith("i_")) {
+          uniqueChatIds.add(item.u);
+        }
+      });
+
+      return Array.from(uniqueChatIds).sort((a, b) => {
+        const firstChatA = Object.values(database).find((item) => item.u === a);
+        const firstChatB = Object.values(database).find((item) => item.u === b);
+        const dateA = parseDate(firstChatA?.d);
+        const dateB = parseDate(firstChatB?.d);
+        return dateB - dateA; // newest first
+      });
+    },
+    [parseDate]
+  );
+
+  const getChatsByChatId = useCallback(
+    (database, chatId) => {
+      return Object.entries(database || {})
+        .filter(([key, item]) => key.startsWith("i_") && item?.u === chatId)
+        .map(([_, item]) => item)
+        .sort((a, b) => parseDate(a.d) - parseDate(b.d));
+    },
+    [parseDate]
+  );
+
+  const getContextByChatId = useCallback((database, chatId) => {
+    return (
+      Object.entries(database || {})
+        .filter(([key, item]) => key.startsWith("c_") && item.u === chatId)
+        .map(([_, item]) => item)[0] || []
+    );
+  }, []);
+
+  const getThreadByChatId = useCallback((database, chatId) => {
+    return (
+      Object.entries(database || {})
+        .filter(([key, item]) => key.startsWith("t_") && item.u === chatId)
+        .map(([_, item]) => item)[0] || []
+    );
+  }, []);
+
+  // --- FIX: compute unique IDs FIRST ---
+  const uniqueChatIds = useMemo(
+    () => getUniqueChatIds(chatHistory),
+    [chatHistory, getUniqueChatIds]
+  );
+
+  const paginatedChatIds = useMemo(() => {
+    const start = (page - 1) * itemsPerPage;
+    return uniqueChatIds.slice(start, start + itemsPerPage);
+  }, [uniqueChatIds, page, itemsPerPage]);
+
+  const totalPages = Math.ceil(uniqueChatIds.length / itemsPerPage);
   const countEm = uniqueChatIds.length;
+
+  const handleToggleHistory = useCallback(() => {
+    setExpanded((prev) => !prev);
+  }, []);
+
+  const handleShowAtAll = useCallback(() => {
+    setShowAtAll((prev) => !prev);
+  }, []);
 
   return (
     <>
-      {countEm > 0 ? (
+      {countEm > 0 && (
         <div className="self-start place-self-center text-center items-center justify-center mb-4 pl-2 pr-2 rounded-lg border-solid border-2 border-aro-800 bg-aro-300 bg-gradient-to-tl from-nosferatu-600 min-w-[100%]">
           <table className="min-w-[100%] border-separate border-spacing-y-2 border-spacing-x-2">
             <tbody>
@@ -117,15 +107,11 @@ const ChatHistory = ({
                 <td className="p-2 tracking-wide text-2xl text-center font-bold text-black">
                   <div
                     className="hover:cursor-context-menu"
-                    onClick={() => handleShowAtAll()}
+                    onClick={handleShowAtAll}
                   >
                     <i className="fa-solid fa-book-bookmark mr-6 text-nosferatu-800 hover:text-dracula-900" />
                     <span
-                      className={
-                        showAtAll
-                          ? "underline hover:no-underline"
-                          : "hover:underline"
-                      }
+                      className={showAtAll ? "underline" : "hover:underline"}
                     >
                       Chat History
                     </span>
@@ -136,14 +122,15 @@ const ChatHistory = ({
                     <div className="mb-6 flex font-bold text-3xl items-end justify-end">
                       <i
                         className="fa-solid fa-rotate text-ero-800 cursor-pointer hover:text-dracula-300 pt-2"
-                        onClick={() => syncClient()}
-                      ></i>
+                        onClick={syncClient}
+                      />
                     </div>
                   </td>
                 )}
               </tr>
             </tbody>
           </table>
+
           {showAtAll && (
             <table className="min-w-[100%] border-separate border-spacing-y-2 border-spacing-x-2">
               <tbody>
@@ -152,11 +139,7 @@ const ChatHistory = ({
                     {(expanded ? uniqueChatIds : uniqueChatIds.slice(0, 5)).map(
                       (chatId) => {
                         const thread = getThreadByChatId(chatHistory, chatId);
-                        const chats = getChatsByChatId(
-                          chatHistory,
-                          chatId,
-                          thread,
-                        );
+                        const chats = getChatsByChatId(chatHistory, chatId);
                         const context = getContextByChatId(chatHistory, chatId);
 
                         return (
@@ -177,9 +160,10 @@ const ChatHistory = ({
                             context={context}
                             thread={thread}
                             serverUsername={serverUsername}
+                            clientJWT={clientJWT}
                           />
                         );
-                      },
+                      }
                     )}
                   </td>
                 </tr>
@@ -206,8 +190,6 @@ const ChatHistory = ({
             </table>
           )}
         </div>
-      ) : (
-        <></>
       )}
     </>
   );

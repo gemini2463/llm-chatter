@@ -17,6 +17,7 @@ import ChatHistory from "./components/ChatHistory.jsx";
 import { ConsolePage } from "./console/ConsolePage.jsx";
 import Config from "./Config.jsx";
 import Cookies from "js-cookie";
+import StorageService from "./utils/storage";
 
 export const dataContext = createContext();
 
@@ -30,6 +31,7 @@ function Chatter() {
     openAI: openAImodels,
     anthropic: anthropicAImodels,
     google: googleAImodels,
+    alibaba: alibabaAImodels,
     grok: grokAImodels,
     deepseek: deepseekAImodels,
     meta: metaAImodels,
@@ -39,7 +41,7 @@ function Chatter() {
 
   const [chatType, setChatType] = useState(Config.defaultChatType);
   const [model, setModel] = useState(Config.defaultModel);
-  const [listModels, setListModels] = useState(openAImodels);
+  const [listModels, setListModels] = useState(openAImodels); //Default to OpenAI models
 
   //Other defaults
 
@@ -82,11 +84,6 @@ function Chatter() {
     return cookieOllama ? JSON.parse(cookieOllama) : localModels[0];
   });
 
-  const [chatHistory, setChatHistory] = useState(() => {
-    const cookieHistory = JSON.parse(localStorage.getItem("chatHistory"));
-    return cookieHistory ? cookieHistory : {};
-  });
-
   const [sessionHash, setSessionHash] = useState("");
   const [componentList, setComponentList] = useState([]);
   const [advancedSetting, setAdvancedSetting] = useState(false);
@@ -94,6 +91,7 @@ function Chatter() {
   const [signInAttempted, setSignInAttempted] = useState(false);
   const [chatCount, setChatCount] = useState(1);
   const [chosenAnthropic, setChosenAnthropic] = useState(anthropicAImodels[0]);
+  const [chosenAlibabaAI, setChosenAlibabaAI] = useState(alibabaAImodels[0]);
   const [chosenGoogle, setChosenGoogle] = useState(googleAImodels[0]);
   const [chosenGrokAI, setChosenGrokAI] = useState(grokAImodels[0]);
   const [chosenDeepseekAI, setChosenDeepseekAI] = useState(deepseekAImodels[0]);
@@ -101,9 +99,48 @@ function Chatter() {
   const [chosenOpenAI, setChosenOpenAI] = useState(openAImodels[0]);
   const intervalIdRef = useRef(null);
 
+  const [chatHistory, setChatHistory] = useState({});
+
+  useEffect(() => {
+    const loadChatHistory = async () => {
+      if (serverUsername) {
+        const history = await StorageService.getChatHistory(serverUsername);
+        setChatHistory(history);
+      }
+    };
+    loadChatHistory();
+  }, [serverUsername]);
+
+  const useDebouncedCallback = useCallback((callback, delay) => {
+    const debouncedFn = useMemo(
+      () => debounce(callback, delay),
+      [callback, delay]
+    );
+    useEffect(() => {
+      return () => debouncedFn.cancel();
+    }, [debouncedFn]);
+    return debouncedFn;
+  });
+
+  // Save chat history (debounced)
+  const saveChatHistory = useDebouncedCallback(async (history) => {
+    if (serverUsername) {
+      await StorageService.saveChatHistory(serverUsername, history);
+    }
+  }, 1000);
+  // Update when chat history changes
+  useEffect(() => {
+    if (Object.keys(chatHistory).length > 0) {
+      saveChatHistory(chatHistory);
+    }
+  }, [chatHistory]);
+
   // Check if the arrays contains elements before adding related keys
   const modelOptions = {};
 
+  if (alibabaAImodels.length > 0) {
+    modelOptions["Alibaba"] = alibabaAImodels;
+  }
   if (anthropicAImodels.length > 0) {
     modelOptions["Anthropic"] = anthropicAImodels;
   }
@@ -120,28 +157,17 @@ function Chatter() {
     modelOptions["Grok"] = grokAImodels;
   }
 
-  if (localModels.length > 0 && Config.ollamaEnabled) {
-    modelOptions["Ollama"] = localModels;
-  }
-
   if (metaAImodels.length > 0) {
     modelOptions["Meta"] = metaAImodels;
+  }
+
+  if (localModels.length > 0 && Config.ollamaEnabled) {
+    modelOptions["Ollama"] = localModels;
   }
 
   if (openAImodels.length > 0) {
     modelOptions["OpenAI"] = openAImodels;
   }
-
-  const useDebouncedCallback = useCallback((callback, delay) => {
-    const debouncedFn = useMemo(
-      () => debounce(callback, delay),
-      [callback, delay],
-    );
-    useEffect(() => {
-      return () => debouncedFn.cancel();
-    }, [debouncedFn]);
-    return debouncedFn;
-  });
 
   const makeNewChat = useCallback((theChatType) => {
     const uuid = uuidv4();
@@ -189,7 +215,7 @@ function Chatter() {
     }, 3000);
   });
 
-  const clearStuff = useCallback((attempted) => {
+  const clearStuff = useCallback(async (attempted) => {
     Cookies.set("clientJWT", JSON.stringify(""), { expires: 1 });
     setClientJWT("");
     //Cookies.set('serverUsername', JSON.stringify(""), { expires: 1 });
@@ -198,7 +224,7 @@ function Chatter() {
     setCheckedIn(false);
     setSignInAttempted(attempted);
     localStorage.setItem("localModels", JSON.stringify([]));
-    localStorage.setItem("chatHistory", JSON.stringify({}));
+    await StorageService.clearChatHistory(serverUsername);
     setLocalModels([]);
   });
 
@@ -229,7 +255,7 @@ function Chatter() {
         clearStuff(false);
       }
     }, 250),
-    [serverURL, clearStuff], // Add serverURL as a dependency
+    [serverURL, clearStuff] // Add serverURL as a dependency
   );
 
   //Ping the backend server to check in, validate passphrase and acquire the JWT for later API calls
@@ -249,7 +275,7 @@ function Chatter() {
           },
           {
             headers: { "Content-Type": "application/json" },
-          },
+          }
         );
 
         const clientCheck = checkinResp?.data || undefined;
@@ -258,9 +284,9 @@ function Chatter() {
           const data = checkinResp.data;
 
           setChatHistory(data.userChatHistory);
-          localStorage.setItem(
-            "chatHistory",
-            JSON.stringify(data.userChatHistory),
+          await StorageService.saveChatHistory(
+            serverUsername,
+            data.userChatHistory
           );
 
           Cookies.set("clientJWT", JSON.stringify(data.token), { expires: 1 });
@@ -283,7 +309,7 @@ function Chatter() {
         clearStuff(true);
       }
     }, 250),
-    [clientJWT, serverUsername, serverPassphrase, sessionHash],
+    [clientJWT, serverUsername, serverPassphrase, sessionHash]
   );
 
   const getRandomModel = useCallback((modelsArray) => {
@@ -305,12 +331,12 @@ function Chatter() {
       Cookies.remove("chosenOllama");
       Cookies.remove("serverUsername");
       localStorage.setItem("localModels", JSON.stringify([]));
-      localStorage.setItem("chatHistory", JSON.stringify({}));
+      await StorageService.clearChatHistory(serverUsername);
       setLocalModels([]);
 
       return;
     }, 250),
-    [],
+    []
   );
 
   //Update the Chat History from the server, for a given username
@@ -325,15 +351,15 @@ function Chatter() {
               "Content-Type": "application/json",
               Authorization: `Bearer ${clientJWT}`,
             },
-          },
+          }
         );
         setChatHistory(newChatData.data);
-        localStorage.setItem("chatHistory", JSON.stringify(newChatData.data));
+        await StorageService.saveChatHistory(serverUsername, newChatData.data);
       } catch (error) {
         console.log(error);
       }
     }, 250),
-    [serverURL, clientJWT],
+    [serverURL, clientJWT]
   );
 
   //Ping the backend server for a list of Ollama locally downloaded list of models
@@ -348,7 +374,7 @@ function Chatter() {
               "Content-Type": "application/json",
               Authorization: `Bearer ${bearer}`,
             },
-          },
+          }
         );
 
         const allModels = theModels.data;
@@ -370,6 +396,7 @@ function Chatter() {
           Deepseek: deepseekAImodels,
           Meta: metaAImodels,
           OpenAI: openAImodels,
+          Alibaba: alibabaAImodels,
         };
 
         const randomOllama = getRandomModel(allModels);
@@ -384,7 +411,7 @@ function Chatter() {
         console.log(error);
       }
     }, 250),
-    [serverURL, localModels, chatType],
+    [serverURL, localModels, chatType]
   );
 
   //Event Handlers
@@ -401,6 +428,7 @@ function Chatter() {
         Deepseek: { modelState: chosenDeepseekAI, list: deepseekAImodels },
         Meta: { modelState: chosenMetaAI, list: metaAImodels },
         OpenAI: { modelState: chosenOpenAI, list: openAImodels },
+        Alibaba: { modelState: chosenAlibabaAI, list: alibabaAImodels },
         default: { modelState: chosenOllama, list: localModels }, //Ollama
       };
 
@@ -421,8 +449,9 @@ function Chatter() {
       chosenDeepseekAI,
       chosenMetaAI,
       chosenOllama,
+      chosenAlibabaAI,
       localModels,
-    ],
+    ]
   );
 
   const handleModelChange = useCallback(
@@ -438,18 +467,19 @@ function Chatter() {
         Meta: setChosenMetaAI,
         Ollama: setChosenOllama,
         OpenAI: setChosenOpenAI,
+        Alibaba: setChosenAlibabaAI,
       };
 
       (setChosenMapping[chatType] || setChosenOllama)(modelObj);
     },
-    [chatType],
+    [chatType]
   );
 
   const handleChange = useCallback(
     (setter) => (e) => {
       setter(e.target.value);
     },
-    [],
+    []
   );
 
   const handleSysMsgChange = handleChange(setSysMsg);
@@ -470,7 +500,7 @@ function Chatter() {
     }
 
     const res = input.match(
-      /(https?:\/\/(?:www\.|(?!www))[a-zA-Z0-9][a-zA-Z0-9-]+[a-zA-Z0-9]\.[^\s]{2,}|www\.[a-zA-Z0-9][a-zA-Z0-9-]+[a-zA-Z0-9]\.[^\s]{2,}|https?:\/\/(?:www\.|(?!www))[a-zA-Z0-9]+\.[^\s]{2,}|www\.[a-zA-Z0-9]+\.[^\s]{2,})/gi,
+      /(https?:\/\/(?:www\.|(?!www))[a-zA-Z0-9][a-zA-Z0-9-]+[a-zA-Z0-9]\.[^\s]{2,}|www\.[a-zA-Z0-9][a-zA-Z0-9-]+[a-zA-Z0-9]\.[^\s]{2,}|https?:\/\/(?:www\.|(?!www))[a-zA-Z0-9]+\.[^\s]{2,}|www\.[a-zA-Z0-9]+\.[^\s]{2,})/gi
     );
     return res !== null;
   });
@@ -519,6 +549,7 @@ function Chatter() {
         setChatCount,
         chosenAnthropic,
         chosenGoogle,
+        chosenAlibabaAI,
         chosenGrokAI,
         chosenDeepseekAI,
         chosenMetaAI,
@@ -551,6 +582,7 @@ function Chatter() {
                     setChatCount={setChatCount}
                     syncClient={syncClient}
                     serverUsername={serverUsername}
+                    clientJWT={clientJWT}
                   />
                 )}
                 <table className="min-w-full text-black">
@@ -746,7 +778,7 @@ function Chatter() {
                                 handleSysMsgChange(e);
                                 localStorage.setItem(
                                   "sysMsg",
-                                  JSON.stringify(""),
+                                  JSON.stringify("")
                                 );
                               }}
                               value={sysMsg}
@@ -993,7 +1025,7 @@ function Chatter() {
                         {/* New Voice button */}
                         {chatType.includes("OpenAI") &&
                         !componentList.some((container) =>
-                          container.chatType.includes("(Voice)"),
+                          container.chatType.includes("(Voice)")
                         ) ? (
                           <>
                             <Spring
@@ -1074,7 +1106,7 @@ function Chatter() {
                 thread={container.thread}
                 restoreID={container.restoreID}
               />
-            ),
+            )
           )}
       </div>
     </dataContext.Provider>

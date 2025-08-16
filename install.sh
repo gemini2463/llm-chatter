@@ -4,7 +4,7 @@ set -e
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 NC='\033[0m' # No Color
-echo "${GREEN}Installing LLM-Chatter v0.2.2...${NC}"
+echo "${GREEN}Installing LLM-Chatter v0.2.5...${NC}"
 echo ""
 # Create main directory
 mkdir -p llm-chatter/client
@@ -23,7 +23,7 @@ echo ""
 wget -q https://raw.githubusercontent.com/gemini2463/llm-chatter/master/dist/index.html -O client/index.html
 # Install dependencies
 echo "${GREEN}Installing dependencies...${NC}"
-npm install > /dev/null 2>&1
+npm install >/dev/null 2>&1
 # Prompt for .env configuration
 echo ""
 echo "${YELLOW}Configuration needed:${NC}"
@@ -37,6 +37,8 @@ echo "Default password: password"
 echo ""
 echo "- LLM_SERVER_HASH (You should generate a fresh 32-character string: https://duckduckgo.com/?q=generate+password+32+characters)"
 echo ""
+echo "- ALIBABA_API_KEY (from https://modelstudio.console.alibabacloud.com/)"
+echo ""
 echo "- ANTHROPIC_API_KEY (from https://www.anthropic.com/api)"
 echo ""
 echo "- DEEPSEEK_API_KEY (from https://platform.deepseek.com/api_keys)"
@@ -45,6 +47,8 @@ echo "- GOOGLE_API_KEY (from https://ai.google.dev/gemini-api/docs/billing)"
 echo ""
 echo "- GROK_API_KEY (from https://console.x.ai/)"
 echo ""
+echo "- META_API_KEY (from https://llama.developer.meta.com/)"
+echo ""
 echo "- OPENAI_API_KEY (from https://platform.openai.com/account/billing)"
 # Create start scripts
 echo ""
@@ -52,14 +56,14 @@ echo ""
 echo ""
 echo "${GREEN}Creating scripts...${NC}"
 # Create server start script
-cat > start-server.sh << 'EOF'
+cat >start-server.sh <<'EOF'
 #!/bin/bash
 cd "$(dirname "$0")"
 node index.js
 EOF
 chmod +x start-server.sh
 # Create client start script
-cat > start-client.sh << 'EOF'
+cat >start-client.sh <<'EOF'
 #!/bin/bash
 cd "$(dirname "$0")/client"
 echo "Client running at http://localhost:8181"
@@ -67,7 +71,7 @@ python3 -m http.server 8181
 EOF
 chmod +x start-client.sh
 # Create stop-all script
-cat > stop-all.sh << 'EOF'
+cat >stop-all.sh <<'EOF'
 #!/bin/bash
 echo "Stopped client and server."
 pkill -f 'node index.js'
@@ -75,7 +79,7 @@ pkill -f 'python3 -m http.server 8181'
 EOF
 chmod +x stop-all.sh
 # Create combined start script
-cat > start-all.sh << 'EOF'
+cat >start-all.sh <<'EOF'
 #!/bin/bash
 cd "$(dirname "$0")"
 echo "Starting server and client..."

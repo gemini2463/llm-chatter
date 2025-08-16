@@ -10,7 +10,7 @@ function App() {
       <Suspense fallback={<div>Loading...</div>}>
         <Routes>
           <Route path="/" element={<Chatter />} />
-          <Route path="/shared/:userName/:uniqueId" element={<Shared />} />
+          <Route path="/shared/:shareToken" element={<Shared />} />
           <Route path="*" element={<Chatter />} />
         </Routes>
       </Suspense>

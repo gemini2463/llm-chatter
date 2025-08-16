@@ -26,6 +26,17 @@ import dayjs from "dayjs";
 import { extension } from "mime-types";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { SSEServerTransport } from "@modelcontextprotocol/sdk/server/sse.js";
+import { createClient } from "redis";
+import { randomBytes } from "crypto";
+
+// Create a Redis client
+const redisClient = createClient({
+  url: process.env.REDIS_URL || "redis://localhost:6379",
+});
+
+redisClient.on("error", (err) => console.error("Redis Client Error", err));
+
+await redisClient.connect();
 
 //Express server to handle client requests
 const app = express();
@@ -78,19 +89,29 @@ if (!fs.existsSync(imgOutputDir)) {
 }
 
 //Read the chat history for a specific user
-function readChatHistory(username) {
-  const chatSpecificPath = path.join(chatHistoryDir, `${username}.jsonl`);
+async function readChatHistory(username) {
+  const redisKey = `chat:${username}`;
+  console.log("[readChatHistory] Looking up key:", redisKey);
 
   try {
-    // Check if the file exists
-    if (!fs.existsSync(chatSpecificPath)) {
-      // Write an empty JSON object as a string
-      fs.writeFileSync(chatSpecificPath, JSON.stringify({}), "utf8");
+    const data = await redisClient.get(redisKey);
+    //console.log(
+    //  "[readChatHistory] Raw data from Redis:",
+    //  data ? "FOUND" : "NOT FOUND"
+    //);
+
+    if (!data) {
+      console.log("[readChatHistory] No history found, returning {}");
       return {};
     }
 
-    const fileContent = fs.readFileSync(chatSpecificPath, "utf8");
-    return fileContent ? JSON.parse(fileContent) : {};
+    const parsed = JSON.parse(data);
+    //console.log("[readChatHistory] Parsed keys:", Object.keys(parsed));
+
+    // Refresh TTL (30 days)
+    await redisClient.expire(redisKey, 60 * 60 * 24 * 30);
+
+    return parsed;
   } catch (error) {
     console.error(`Error reading chat history for ${username}:`, error);
     return {};
@@ -117,7 +138,7 @@ function getChatsByChatId(database, chatId) {
           key.startsWith("i_") &&
           item &&
           typeof item === "object" &&
-          item.u === chatId,
+          item.u === chatId
       )
       .map(([_, item]) => item)
       .sort((a, b) => {
@@ -135,94 +156,53 @@ function getChatsByChatId(database, chatId) {
 }
 
 // Function to log chat events
-function logChatEvent(username, data, context = null, thread = null) {
-  const logEntry = {
-    ...data,
-  };
+async function logChatEvent(username, data, context = null, thread = null) {
+  const redisKey = `chat:${username}`;
+  try {
+    // Read existing history
+    let chatHistory = await readChatHistory(username);
 
-  const chatSpecificPath = path.join(chatHistoryDir, `${username}.jsonl`);
-  let chatHistory = {};
+    // Add the new chat record
+    const key = `i_${Object.keys(chatHistory).length}`;
+    chatHistory[key] = { ...data };
 
-  // Check if the file exists
-  if (fs.existsSync(chatSpecificPath)) {
-    try {
-      const fileContent = fs.readFileSync(chatSpecificPath, "utf8");
-      chatHistory = JSON.parse(fileContent || "{}");
-    } catch (error) {
-      console.error(
-        `Error reading existing chat history for ${username}:`,
-        error,
-      );
+    // Add optional context
+    if (context) {
+      const contextKey = `c_${Object.keys(chatHistory).length}`;
+      chatHistory[contextKey] = context;
     }
+
+    // Add optional thread
+    if (thread) {
+      const threadKey = `t_${Object.keys(chatHistory).length}`;
+      chatHistory[threadKey] = thread;
+    }
+
+    // Save back to Redis & reset TTL to 30 days
+    await redisClient.set(redisKey, JSON.stringify(chatHistory), {
+      EX: 60 * 60 * 24 * 30, // 30 days
+    });
+  } catch (error) {
+    console.error(`Error logging chat event for ${username}:`, error);
   }
-
-  // Add the new log entry
-  const key = `i_${Object.keys(chatHistory).length}`;
-  chatHistory[key] = logEntry;
-
-  //Ollama context array
-  if (context) {
-    const contextKey = `c_${Object.keys(chatHistory).length}`;
-    chatHistory[contextKey] = context;
-  }
-
-  if (thread) {
-    const threadKey = `t_${Object.keys(chatHistory).length}`;
-    chatHistory[threadKey] = thread;
-  }
-
-  // Encrypt and save
-  const chatHistoryStr = JSON.stringify(chatHistory);
-
-  fs.writeFileSync(chatSpecificPath, chatHistoryStr);
 }
 
 //Shareable links to historical chats
 const validateShare = [
-  body("shareUser")
-    .isString()
-    .trim()
-    .notEmpty()
-    .matches(/^[a-zA-Z0-9_-]+$/)
-    .isLength({ min: 3, max: 64 }),
-
-  body("shareChat")
-    .isString()
-    .trim()
-    .notEmpty()
-    .matches(/^[a-zA-Z0-9_-]+$/)
-    .isLength({ min: 3, max: 64 }),
+  body("shareToken").isString().isLength({ min: 32, max: 64 }),
 ];
 
 app.post("/chkshr", validateShare, async (req, res) => {
-  const errors = validationResult(req);
-  if (!errors.isEmpty()) {
-    console.log(errors);
-    return res.status(400).json({ error: "Bad Request" });
-  }
+  const { shareToken } = req.body;
+  const redisKey = `share:${shareToken}`;
+  const data = await redisClient.get(redisKey);
 
-  const clientIp =
-    req.headers["cf-connecting-ip"] || req.headers["x-forwarded-for"] || req.ip;
-  const agent = req.headers["user-agent"];
-  const origin = req.headers.origin;
+  if (!data)
+    return res.status(404).json({ error: "Invalid or expired share token" });
 
-  const shareUser = req.body.shareUser;
-  const shareChat = req.body.shareChat;
-
-  const userChatHistory = readChatHistory(shareUser);
-
-  if (!userChatHistory || Object.keys(userChatHistory).length === 0) {
-    return res.status(404).json({ error: "No user chat history found." });
-  }
-
-  const chatHistory = getChatsByChatId(userChatHistory, shareChat);
-
-  if (
-    !chatHistory ||
-    (Array.isArray(chatHistory) && chatHistory.length === 0)
-  ) {
-    return res.status(404).json({ error: "Chat history not found." });
-  }
+  const { user, chatId } = JSON.parse(data);
+  const userChatHistory = await readChatHistory(user);
+  const chatHistory = getChatsByChatId(userChatHistory, chatId);
 
   res.send(chatHistory);
 });
@@ -254,7 +234,7 @@ const validateCheckin = [
     .withMessage("Username cannot be empty.")
     .matches(/^[a-zA-Z0-9_-]+$/)
     .withMessage(
-      "Username can only contain letters, numbers, underscores, and hyphens.",
+      "Username can only contain letters, numbers, underscores, and hyphens."
     ),
 
   body("serverPassphrase")
@@ -317,8 +297,8 @@ app.post("/checkin", validateCheckin, async (req, res) => {
           origin +
           "\nConnector's Address (IP): " +
           clientIp +
-          "\n",
-      ),
+          "\n"
+      )
     );
 
     return res.status(400).json({ error: "Authentication Failure" });
@@ -347,12 +327,16 @@ app.post("/checkin", validateCheckin, async (req, res) => {
         clientIp +
         "\nUser-Agent: " +
         agent +
-        "\n",
-    ),
+        "\n"
+    )
   );
+  //console.log("[/checkin] Authenticated user:", userName);
 
-  const userChatHistory = readChatHistory(userName);
-
+  const userChatHistory = await readChatHistory(userName);
+  //console.log(
+  //  "[/checkin] Chat history keys sent to client:",
+  //  Object.keys(userChatHistory)
+  //);
   res.json({ token, userChatHistory });
 });
 
@@ -379,6 +363,7 @@ const validateInput = [
   body("keep_alive").optional().isInt({ min: 0 }),
   body("messages").optional().isArray(),
   body("images").optional().isArray(),
+  body("chatId").optional().isString().trim(),
 
   // Middleware function to handle validation and token verification
   (req, res, next) => {
@@ -406,22 +391,14 @@ const validateInput = [
 
 //Client requests to re-sync their data
 app.post("/sync", validateInput, async (req, res) => {
-  const clientIp =
-    req.headers["cf-connecting-ip"] || req.headers["x-forwarded-for"] || req.ip;
-  const origin = req.headers["origin"];
+  const username = req.body.userName;
+  console.log("[/sync] Requested by:", username);
 
   try {
-    const userChatHistory = readChatHistory(req.body.userName);
-
+    const userChatHistory = await readChatHistory(username);
     console.log(
-      chalk.cyan("\nClient sync'd.") +
-        "\nUser: " +
-        req.body.userName +
-        "\nSource: " +
-        origin +
-        "\nConnector IP: " +
-        clientIp +
-        "\n",
+      "[/sync] Returning chat history keys:",
+      Object.keys(userChatHistory)
     );
 
     res.send(userChatHistory);
@@ -453,6 +430,121 @@ const verifyToken = (req, res, next) => {
   req.session = activeSessions.get(token);
   next();
 };
+
+// Generate a Share Token
+app.post("/mkshr", async (req, res) => {
+  const { chatId, user } = req.body;
+  if (!chatId) return res.status(400).json({ error: "Missing chatId" });
+
+  const shareToken = randomBytes(16).toString("hex");
+  const redisKey = `share:${shareToken}`;
+
+  // Store mapping to chatId + user
+  await redisClient.set(
+    redisKey,
+    JSON.stringify({
+      user: user,
+      chatId,
+    }),
+    { EX: 60 * 60 * 24 * 365 }
+  ); // expire in 365 days
+
+  res.json({ shareToken });
+});
+
+function extractPromptText(theData, messages) {
+  let promptText = (theData.prompt && theData.prompt.trim()) || "";
+
+  // If no prompt yet, scan the last user message for real text (excluding "Image.")
+  if (!promptText && Array.isArray(messages) && messages.length > 0) {
+    const lastMessage = messages[messages.length - 1];
+    if (lastMessage && Array.isArray(lastMessage.content)) {
+      const textPart = lastMessage.content.find(
+        (part) =>
+          part.type === "text" &&
+          part.text &&
+          part.text.trim() &&
+          part.text.trim().toLowerCase() !== "image."
+      );
+      if (textPart) {
+        promptText = textPart.text.trim();
+      }
+    }
+  }
+
+  // If still no prompt, scan earlier messages for any non-empty text (excluding "Image.")
+  if (!promptText && Array.isArray(messages)) {
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const m = messages[i];
+      if (m && Array.isArray(m.content)) {
+        const part = m.content.find(
+          (p) =>
+            p.type === "text" &&
+            p.text &&
+            p.text.trim() &&
+            p.text.trim().toLowerCase() !== "image."
+        );
+        if (part) {
+          promptText = part.text.trim();
+          break;
+        }
+      }
+    }
+  }
+
+  // --- New: detect attachments ---
+  let hasImage = false;
+  let hasTextFile = false;
+
+  if (Array.isArray(messages)) {
+    for (const msg of messages) {
+      if (Array.isArray(msg.content)) {
+        for (const p of msg.content) {
+          // Detect image content
+          if (
+            (p.type === "image" && p.data) ||
+            p.type === "image_url" ||
+            p.type === "inlineData" ||
+            (p.source && p.source.type === "base64")
+          ) {
+            hasImage = true;
+          }
+          // Detect attached text/csv file
+          if (
+            p.type === "text_attachment" || // hypothetical custom type
+            (p.mimeType &&
+              (p.mimeType.includes("text/plain") ||
+                p.mimeType.includes("text/csv")))
+          ) {
+            hasTextFile = true;
+          }
+        }
+      }
+    }
+  }
+
+  // If no prompt text but attachments exist
+  if (!promptText) {
+    if (hasImage && hasTextFile) {
+      promptText = "Image + Text File Attached";
+    } else if (hasImage) {
+      promptText = "Image Attached";
+    } else if (hasTextFile) {
+      promptText = "Text File Attached";
+    }
+  } else {
+    // If there is prompt text, append attachment info
+    if (hasImage && hasTextFile) {
+      promptText += " [Image + Text File Attached]";
+    } else if (hasImage) {
+      promptText += " [Image Attached]";
+    } else if (hasTextFile) {
+      promptText += " [Text File Attached]";
+    }
+  }
+
+  return promptText || "N/A";
+}
 
 app.get("/sse", verifyToken, async (req, res) => {
   const transport = new SSEServerTransport("/messages", res);
@@ -511,7 +603,7 @@ app.post("/getmodels", validateInput, async (req, res) => {
           origin +
           "\nConnector IP: " +
           clientIp +
-          "\n",
+          "\n"
       );
 
       res.send(response.data.models);
@@ -565,7 +657,7 @@ app.post("/ollama", validateInput, async (req, res) => {
           z: theData.system,
         },
         [],
-        thread,
+        thread
       );
     }
 
@@ -578,13 +670,13 @@ app.post("/ollama", validateInput, async (req, res) => {
         z: theData.prompt,
       },
       [],
-      thread,
+      thread
     );
 
     const response = await axios.post(
       "http://localhost:11434/api/generate",
       theData,
-      { headers: { "Content-Type": "application/json" } },
+      { headers: { "Content-Type": "application/json" } }
     );
 
     res.send(response.data);
@@ -600,7 +692,7 @@ app.post("/ollama", validateInput, async (req, res) => {
         z: response.data.response,
       },
       response.data.context,
-      thread,
+      thread
     );
 
     console.log(`
@@ -608,17 +700,10 @@ app.post("/ollama", validateInput, async (req, res) => {
     ${chalk.underline("Remote IP:")} ${chalk.white(
       req.headers["cf-connecting-ip"] ||
         req.headers["x-forwarded-for"] ||
-        req.ip,
+        req.ip
     )}
     ${chalk.underline("User:")} ${chalk.white(username)}
     ${chalk.blue.bold.underline("Model")}: ${chalk.blue(theData.model)}
-    ${chalk.yellow.bold.underline("Temperature")}: ${chalk.yellow(
-      theData.options.temperature,
-    )}
-    ${chalk.red.bold.underline("Top-P")}: ${chalk.red(theData.options.top_p)}
-    ${chalk.red.bold.underline("Top-K")}: ${chalk.red(theData.options.top_k)}
-    ${chalk.cyan.bold.underline("Prompt")}:
-    ${chalk.cyan(theData.prompt)}
     ${chalk.bgGreen.bold("////////////////////////////////////////\n")}
     `);
   } catch (error) {
@@ -670,9 +755,11 @@ app.post("/anthropic", validateInput, async (req, res) => {
           z: theData.system,
         },
         [],
-        theData.thread,
+        theData.thread
       );
     }
+
+    const promptText = extractPromptText(theData, theMsgs);
 
     logChatEvent(
       username,
@@ -680,10 +767,10 @@ app.post("/anthropic", validateInput, async (req, res) => {
         ...logData,
         r: "user",
         d: timeNow,
-        z: theMsgs[theMsgs.length - 1].content[0].text,
+        z: promptText,
       },
       [],
-      theData.thread,
+      theData.thread
     );
 
     const msg = await anthropic.messages.create({
@@ -709,7 +796,7 @@ app.post("/anthropic", validateInput, async (req, res) => {
         z: msg.content[0].text,
       },
       [], //Context, Ollama only
-      theData.thread,
+      theData.thread
     );
 
     console.log(`
@@ -717,17 +804,10 @@ app.post("/anthropic", validateInput, async (req, res) => {
     ${chalk.underline("Remote IP:")} ${chalk.white(
       req.headers["cf-connecting-ip"] ||
         req.headers["x-forwarded-for"] ||
-        req.ip,
+        req.ip
     )}
     ${chalk.underline("User:")} ${chalk.white(theData.serverUsername)}
     ${chalk.blue.bold.underline("Model")}: ${chalk.blue(theData.model)}
-    ${chalk.yellow.bold.underline("Temperature")}: ${chalk.yellow(
-      theData.temperature,
-    )}
-    ${chalk.red.bold.underline("Top-P")}: ${chalk.red(theData.top_p)}
-    ${chalk.red.bold.underline("Top-K")}: ${chalk.red(theData.top_k)}
-    ${chalk.cyan.bold.underline("Prompt")}:
-    ${chalk.cyan(theMsgs[theMsgs.length - 1].content[0].text)}
     ${chalk.bgGreen.bold("////////////////////////////////////////\n")}
     `);
   } catch (error) {
@@ -744,6 +824,7 @@ function getExtFromMime(mimeType) {
 //Grok
 //DeepSeek
 //Meta
+//Alibaba
 
 //Non-OpenAI need to have baseUrl set
 async function makeAIRequest(req, res, apiKeyEnvVar, baseUrl = null) {
@@ -767,29 +848,42 @@ async function makeAIRequest(req, res, apiKeyEnvVar, baseUrl = null) {
 
     // Check the model and alter messages if necessary
     if (Config.reasoningModels.includes(model)) {
-      // Filter out the object with role "system"
-      //messages = messages.filter(message => message.role !== "system");
+      // Reasoning models: force certain params
       temperature = 1;
       top_p = 1;
       system = "";
-      messages = messages.filter((message) => message.role !== "system");
+
+      // Keep all non-system messages, but still include any vision/image parts
+      messages = messages.filter((message) => {
+        if (message.role !== "system") return true;
+        // If system message had any vision/image content, keep it
+        if (Array.isArray(message.content)) {
+          return message.content.some(
+            (p) =>
+              p.type === "image" ||
+              p.type === "image_url" ||
+              p.type === "inlineData" ||
+              (p.source && p.source.type === "base64")
+          );
+        }
+        return false;
+      });
     }
 
-    const lastMessage = messages[messages.length - 1];
-    const promptText =
-      lastMessage && lastMessage.content[0].text
-        ? lastMessage.content[0].text
-        : "N/A";
+    const promptText = extractPromptText(theData, messages);
 
     const timeNow = dayjs().format(Config.timeFormat);
     const chatId = theData.uniqueChatID;
     const sent1 = theData.sentOne;
-    const imgInput = theData.imgInput ?? false;
-    const imgOutput = theData.imgOutput ?? false;
     const username = theData.serverUsername;
     const streaming = theData.stream ?? false;
+
     const imgQuality = theData.imgQuality ?? "medium";
     const imgSize = theData.imgSize ?? "1024x1024";
+    const imgInput = theData.imgInput ?? false;
+    const imgOutput = theData.imgOutput ?? false;
+    const isImgGenModel =
+      Config.imgGenerationModels.includes(model) && imgOutput;
 
     if (streaming) {
       res.setHeader("Content-Type", "text/event-stream");
@@ -810,9 +904,9 @@ async function makeAIRequest(req, res, apiKeyEnvVar, baseUrl = null) {
             "upload." + getExtFromMime(img.mimeType),
             {
               type: img.mimeType,
-            },
+            }
           );
-        }),
+        })
       );
     }
 
@@ -834,7 +928,7 @@ async function makeAIRequest(req, res, apiKeyEnvVar, baseUrl = null) {
           z: system,
         },
         [],
-        theData.thread,
+        theData.thread
       );
     }
 
@@ -847,7 +941,7 @@ async function makeAIRequest(req, res, apiKeyEnvVar, baseUrl = null) {
         z: promptText,
       },
       [],
-      theData.thread,
+      theData.thread
     );
 
     // Set up client with the appropriate API key and optional base URL
@@ -856,8 +950,59 @@ async function makeAIRequest(req, res, apiKeyEnvVar, baseUrl = null) {
       ...(baseUrl && { baseURL: baseUrl }),
     });
 
+    let response;
+
+    if (isImgGenModel) {
+      response = await client.responses.create({
+        model,
+        input: promptText,
+        tools: [
+          {
+            type: "image_generation",
+            size: imgSize,
+            quality: imgQuality,
+          },
+        ],
+        //tool_choice: { type: "image_generation" }
+      });
+
+      const imageData = response.output
+        .filter((output) => output.type === "image_generation_call")
+        .map((output) => output.result);
+
+      if (imageData.length > 0) {
+        const timestamp = dayjs().format(Config.timeFormat);
+        const savedImages = [];
+        imageData.forEach((imgB64, idx) => {
+          const imgSpecificPath = path.join(
+            imgOutputDir,
+            `${chatId}_${idx}.jpg`
+          );
+          fs.writeFileSync(imgSpecificPath, Buffer.from(imgB64, "base64"));
+          savedImages.push(imgB64);
+        });
+
+        logChatEvent(
+          username,
+          {
+            ...logData,
+            r: "assistant",
+            d: timestamp,
+            z: `Image Output (${imageData.length} file${imageData.length > 1 ? "s" : ""}).`,
+          },
+          [],
+          theData.thread
+        );
+
+        res.status(200).json({ base64: savedImages });
+      } else {
+        res.status(200).json(response);
+      }
+      return;
+    }
+
     // Make the API call
-    const response =
+    response =
       imgOutput && !imgInput
         ? await client.images.generate({
             prompt: promptText,
@@ -885,12 +1030,13 @@ async function makeAIRequest(req, res, apiKeyEnvVar, baseUrl = null) {
               stream: streaming,
             });
     if (imgOutput) {
-      const image_base64 = response.data[0].b64_json;
-      const image_bytes = Buffer.from(image_base64, "base64");
-      const imgSpecificPath = path.join(imgOutputDir, `${chatId}.jpg`);
-      fs.writeFileSync(imgSpecificPath, image_bytes);
-
-      res.status(200).json({ base64: image_base64 });
+      const images_base64 = response.data.map((d) => d.b64_json);
+      images_base64.forEach((b64, idx) => {
+        const image_bytes = Buffer.from(b64, "base64");
+        const imgSpecificPath = path.join(imgOutputDir, `${chatId}_${idx}.jpg`);
+        fs.writeFileSync(imgSpecificPath, image_bytes);
+      });
+      res.status(200).json({ base64: images_base64 });
     } else {
       if (streaming) {
         let fullAssistantText = "";
@@ -914,7 +1060,7 @@ async function makeAIRequest(req, res, apiKeyEnvVar, baseUrl = null) {
             z: fullAssistantText || "No response content available",
           },
           [], //Context, Ollama only
-          theData.thread,
+          theData.thread
         );
       } else {
         res.status(200).json(response);
@@ -931,7 +1077,7 @@ async function makeAIRequest(req, res, apiKeyEnvVar, baseUrl = null) {
                 "No response content available",
             },
             [], //Context, Ollama only
-            theData.thread,
+            theData.thread
           );
         }
       }
@@ -942,14 +1088,10 @@ async function makeAIRequest(req, res, apiKeyEnvVar, baseUrl = null) {
     ${chalk.underline("Remote IP:")} ${chalk.white(
       req.headers["cf-connecting-ip"] ||
         req.headers["x-forwarded-for"] ||
-        req.ip,
+        req.ip
     )}
     ${chalk.underline("User:")} ${chalk.white(theData.serverUsername)}
     ${chalk.blue.bold.underline("Model")}: ${chalk.blue(model)}
-    ${chalk.yellow.bold.underline("Temperature")}: ${chalk.yellow(temperature)}
-    ${chalk.red.bold.underline("Top-P")}: ${chalk.red(top_p)}
-    ${chalk.cyan.bold.underline("Prompt")}:
-    ${chalk.cyan(promptText)}
     ${chalk.bgGreen.bold("////////////////////////////////////////\n")}
     `);
   } catch (error) {
@@ -958,16 +1100,24 @@ async function makeAIRequest(req, res, apiKeyEnvVar, baseUrl = null) {
   }
 }
 app.post("/openai", validateInput, (req, res) =>
-  makeAIRequest(req, res, "OPENAI_API_KEY"),
+  makeAIRequest(req, res, "OPENAI_API_KEY")
 );
 app.post("/grok", validateInput, (req, res) =>
-  makeAIRequest(req, res, "GROK_API_KEY", "https://api.x.ai/v1"),
+  makeAIRequest(req, res, "GROK_API_KEY", "https://api.x.ai/v1")
 );
 app.post("/deepseek", validateInput, (req, res) =>
-  makeAIRequest(req, res, "DEEPSEEK_API_KEY", "https://api.deepseek.com"),
+  makeAIRequest(req, res, "DEEPSEEK_API_KEY", "https://api.deepseek.com")
 );
 app.post("/meta", validateInput, (req, res) =>
-  makeAIRequest(req, res, "META_API_KEY", "https://api.llama.com/compat/v1"),
+  makeAIRequest(req, res, "META_API_KEY", "https://api.llama.com/compat/v1")
+);
+app.post("/alibaba", validateInput, (req, res) =>
+  makeAIRequest(
+    req,
+    res,
+    "ALIBABA_API_KEY",
+    "https://dashscope-intl.aliyuncs.com/compatible-mode/v1"
+  )
 );
 
 //Convert function needed here because the Google API handles messages differently than other models
@@ -1027,7 +1177,6 @@ app.post("/google", validateInput, async (req, res) => {
     const chatId = req.body.uniqueChatID;
     const sent1 = req.body.sentOne;
     const username = req.body.serverUsername;
-    const promptText = req.body.prompt;
 
     const logData = {
       u: chatId,
@@ -1047,9 +1196,11 @@ app.post("/google", validateInput, async (req, res) => {
           z: theData.system,
         },
         [],
-        theData.thread,
+        theData.thread
       );
     }
+
+    const promptText = extractPromptText(theData, theMsgs);
 
     logChatEvent(
       username,
@@ -1057,10 +1208,10 @@ app.post("/google", validateInput, async (req, res) => {
         ...logData,
         r: "user",
         d: timeNow,
-        z: theMsgs[theMsgs.length - 1].content[0].text,
+        z: promptText,
       },
       [],
-      theData.thread,
+      theData.thread
     );
 
     const generationConfig = {
@@ -1139,7 +1290,7 @@ app.post("/google", validateInput, async (req, res) => {
           z: responseText,
         },
         [], // Context, Ollama only
-        theData.thread,
+        theData.thread
       );
     }
     console.log(`
@@ -1147,17 +1298,10 @@ app.post("/google", validateInput, async (req, res) => {
     ${chalk.underline("Remote IP:")} ${chalk.white(
       req.headers["cf-connecting-ip"] ||
         req.headers["x-forwarded-for"] ||
-        req.ip,
+        req.ip
     )}
     ${chalk.underline("User:")} ${chalk.white(theData.serverUsername)}
     ${chalk.blue.bold.underline("Model")}: ${chalk.blue(theData.model)}
-    ${chalk.yellow.bold.underline("Temperature")}: ${chalk.yellow(
-      theData.temperature,
-    )}
-    ${chalk.red.bold.underline("Top-P")}: ${chalk.red(theData.top_p)}
-    ${chalk.red.bold.underline("Top-K")}: ${chalk.red(theData.top_k)}
-    ${chalk.cyan.bold.underline("Prompt")}:
-    ${chalk.cyan(theMsgs[theMsgs.length - 1].content[0].text)}
     ${chalk.bgGreen.bold("////////////////////////////////////////\n")}
     `);
   } catch (error) {
@@ -1177,6 +1321,6 @@ app.post("/google", validateInput, async (req, res) => {
 app.listen(port, () => {
   console.log(
     `\n\nServer running at http://localhost:${port}\n` +
-      chalk.bgCyan.bold("////////////////////////////////////////\n"),
+      chalk.bgCyan.bold("////////////////////////////////////////\n")
   );
 });

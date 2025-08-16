@@ -1,4 +1,4 @@
-# LLM Chatter, v0.2.2
+# LLM Chatter, v0.2.5
 
 Large Language Model chat by text, vision and voice. Proprietary models by API request and local Ollama models supported.
 
@@ -17,6 +17,7 @@ Large Language Model chat by text, vision and voice. Proprietary models by API r
 2. Configure .env file
    - [LLM_CHATTER_PASSPHRASE](https://bcrypt.online/) - The 'input' at bcrypt.online will be the app's passphrase, and required for logins. The generated hash is placed in .env.
    - [LLM_SERVER_HASH](https://duckduckgo.com/?q=generate+password+32+characters) - Any 32-character string.
+   - [ALIBABA_API_KEY](https://modelstudio.console.alibabacloud.com/)
    - [ANTHROPIC_API_KEY](https://www.anthropic.com/api)
    - [DEEPSEEK_API_KEY](https://platform.deepseek.com/api_keys)
    - [GOOGLE_API_KEY](https://ai.google.dev/gemini-api/docs/billing)
@@ -40,7 +41,7 @@ Built with:
 - [FontAwesome](https://fontawesome.com/)
 
 # LLM Documentation
-
+- [Alibaba](https://www.alibabacloud.com/help/en/model-studio/model-api-reference)
 - [Anthropic](https://docs.anthropic.com/)
 - [Deepseek](https://api-docs.deepseek.com/)
 - [Google](https://ai.google.dev/gemini-api/docs)
@@ -51,6 +52,10 @@ Built with:
 
 # Models List
 
+- gpt-5\*
+- gpt-5-mini\*
+- gpt-5-nano\*
+- gpt-5-chat\*
 - gpt-4.1\*
 - gpt-4.1-mini\*
 - gpt-4.1-nano\*
@@ -88,6 +93,9 @@ Built with:
 - llama-4-maverick-17b-128e-instruct-fp8\*
 - llama-3.3-70b-instruct
 - llama-3.3-8b-instruct
+- qwen-turbo
+- qwen-max
+- qwen-plus
 
   \*Vision input-image support (img/text in, text out)
 

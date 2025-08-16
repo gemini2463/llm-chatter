@@ -8,14 +8,14 @@ import copy from "copy-to-clipboard";
 import CopyButton from "./components/CopyButton";
 
 function Shared() {
-  const { uniqueId, userName } = useParams();
+  const { shareToken } = useParams();
   const { serverURL } = Config;
-  const [shareChat, setShareChat] = useState({});
+  const [shareChat, setShareChat] = useState([]);
   const [showError, setShowError] = useState("");
 
   const sharedCheckIn = useCallback(
     debounce(async () => {
-      if (!serverURL || !userName || !uniqueId) {
+      if (!serverURL || !shareToken) {
         const errMsg = "Missing required parameters.";
         setShowError(errMsg);
 
@@ -25,25 +25,26 @@ function Shared() {
       try {
         const checkinResp = await axios.post(
           serverURL + "/chkshr",
-          { shareUser: userName, shareChat: uniqueId },
+          { shareToken },
           {
             headers: { "Content-Type": "application/json" },
-          },
+          }
         );
 
         const clientCheck = checkinResp?.data || undefined;
 
-        if (clientCheck) {
-          const data = checkinResp.data;
-
-          //setShareChat(data.shareChatHistory);
-          setShareChat(data);
+        if (Array.isArray(checkinResp.data)) {
+          setShareChat(checkinResp.data);
+          setShowError("");
+        } else {
+          setShareChat([]);
+          setShowError("No chat data found.");
         }
       } catch (error) {
         setShowError(JSON.stringify(error));
       }
     }, 250),
-    [serverURL, userName, uniqueId],
+    [serverURL, shareToken]
   );
 
   //Starts the interval on first load
@@ -84,7 +85,17 @@ function Shared() {
               </div>
             </td>
           </tr>
-          {Object.entries(shareChat).map(([key, obj]) => {
+          {showError && (
+            <tr>
+              <td>
+                <div className="text-center text-red-500 font-bold p-2">
+                  {showError}
+                </div>
+              </td>
+            </tr>
+          )}
+          {shareChat.map((obj, index) => {
+            if (!obj || typeof obj.z !== "string") return null;
             const contentText = obj.z;
 
             if (obj.r === "user") {
@@ -108,7 +119,7 @@ function Shared() {
                     : "Unknown Role";
 
             return (
-              <tr key={key}>
+              <tr key={index}>
                 <td
                   onCopy={handleCopy}
                   className={
